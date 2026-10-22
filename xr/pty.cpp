@@ -76,7 +76,8 @@ void PtyHost::connect() {
       continue;
     environment.push_back(std::move(value));
   }
-  environment.emplace_back("TERM=xterm");
+  environment.emplace_back("TERM=xterm-256color");
+  environment.emplace_back("COLORTERM=truecolor");
   if (!utf8)
     environment.emplace_back("LC_ALL=C.UTF-8");
   std::vector<char *> envp;

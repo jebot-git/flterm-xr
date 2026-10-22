@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "renderer.hpp"
 #include "bdf_font.hpp"
+#include "terminal-style.hpp"
 #include <FL/fl_utf8.h>
 #include <algorithm>
 #include <filesystem>
@@ -67,28 +68,35 @@ void Renderer::font(const FontChoice &next) {
   baseline = std::clamp(int(face->size->metrics.ascender / 64), 1, ch);
 }
 FT_Face Renderer::glyphFace(unsigned cp) {
-  if (FT_Get_Char_Index(face, cp))
-    return face;
-  if (auto it = glyphFaces.find(cp); it != glyphFaces.end())
-    return it->second;
-  for (const auto &item : bdf_fonts::discover()) {
-    if (abs(item.pixels - choice.pixels) > choice.pixels / 2)
-      continue;
+  if (auto it = glyphFaces.find(cp); it != glyphFaces.end()) return it->second;
+  const bool powerline = cp >= 0xe0b0 && cp <= 0xe0b3;
+  const bool symbol = (cp >= 0xe000 && cp <= 0xf8ff) || (cp >= 0xf0000 && cp <= 0xffffd);
+  if (!symbol && FT_Get_Char_Index(face,cp)) return face;
+  auto candidates = bdf_fonts::discover();
+  auto priority = [&](const bdf_fonts::Face &item) {
+    bool preferred = symbol && (item.family == "Dome Prompt Symbols" ||
+       item.family.find("Cozette") != std::string::npos || item.family.find("kirsch") != std::string::npos);
+    if (powerline) preferred = item.family.find("Powerline") != std::string::npos;
+    return std::pair{preferred ? 0 : 1, std::abs(item.pixels - choice.pixels)};
+  };
+  std::stable_sort(candidates.begin(),candidates.end(),[&](const auto &a,const auto &b){return priority(a)<priority(b);});
+  // BDF only, including symbol fallback. A 2x strike is derived by exact bitmap
+  // duplication when the terminal uses the session's 2x font setting.
+  for (auto item : candidates) {
+    if (choice.pixels >= 24 && abs(choice.pixels-item.pixels*2) < abs(choice.pixels-item.pixels))
+      item = bdf_fonts::scaled(item,2);
+    if (abs(item.pixels - choice.pixels) > choice.pixels / 2) continue;
     FT_Face value{};
-    if (auto it = fallback.find(item.file); it != fallback.end())
-      value = it->second;
+    if (auto it = fallback.find(item.file); it != fallback.end()) value = it->second;
     else {
-      if (FT_New_Face(ft, item.file.c_str(), 0, &value))
-        continue;
-      if (!value->num_fixed_sizes) {
-        FT_Done_Face(value);
-        continue;
+      if (FT_New_Face(ft, item.file.c_str(), 0, &value)) continue;
+      if (std::string(FT_Get_Font_Format(value)) != "BDF" || !value->num_fixed_sizes) {
+        FT_Done_Face(value); continue;
       }
       FT_Select_Size(value, 0);
       fallback[item.file] = value;
     }
-    if (FT_Get_Char_Index(value, cp))
-      return glyphFaces[cp] = value;
+    if (FT_Get_Char_Index(value, cp)) return glyphFaces[cp] = value;
   }
   return glyphFaces[cp] = face;
 }
@@ -118,19 +126,25 @@ void Renderer::glyph(unsigned cp, int x, int y, int cols,
     return;
   auto slot = selected->glyph;
   auto &bitmap = slot->bitmap;
-  for (unsigned yy = 0; yy < bitmap.rows; ++yy)
-    for (unsigned xx = 0; xx < bitmap.width; ++xx) {
-      int dx = x + slot->bitmap_left + xx,
-          dy = y + baseline - slot->bitmap_top + yy;
+  const bool separator = cp >= 0xe0b0 && cp <= 0xe0b3;
+  const unsigned drawWidth = separator ? std::max(1,cols)*cw : bitmap.width;
+  const unsigned drawHeight = separator ? ch : bitmap.rows;
+  if (!bitmap.width || !bitmap.rows) return;
+  for (unsigned yy = 0; yy < drawHeight; ++yy)
+    for (unsigned xx = 0; xx < drawWidth; ++xx) {
+      int dx = separator ? x + xx : x + slot->bitmap_left + xx,
+          dy = separator ? y + yy : y + baseline - slot->bitmap_top + yy;
       if (dx < x || dx >= x + std::max(1, cols) * cw || dy < y ||
           dy >= y + ch || dx < 0 || dy < 0 || dx >= width || dy >= height)
         continue;
-      auto row =
-          bitmap.buffer +
-          (bitmap.pitch >= 0 ? yy : bitmap.rows - 1 - yy) * abs(bitmap.pitch);
+      // Powerline bitmaps span the cell even when the inherited text font has
+      // different metrics; nearest-neighbour sampling keeps BDF pixels crisp.
+      unsigned sx=separator ? xx*bitmap.width/drawWidth : xx;
+      unsigned sy=separator ? yy*bitmap.rows/drawHeight : yy;
+      auto row = bitmap.buffer + (bitmap.pitch >= 0 ? sy : bitmap.rows - 1 - sy) * abs(bitmap.pitch);
       unsigned a = bitmap.pixel_mode == FT_PIXEL_MODE_MONO
-                       ? (row[xx / 8] & (128 >> (xx % 8)) ? 255 : 0)
-                       : row[xx];
+                       ? (row[sx / 8] & (128 >> (sx % 8)) ? 255 : 0)
+                       : row[sx];
       if (!a)
         continue;
       size_t at = (size_t(height - 1 - dy) * width + dx) * 4;
@@ -144,23 +158,24 @@ void Renderer::render(Fl_Term &term, int tab, int count) {
   height = (term.sizeY() + 1) * ch;
   pixels.assign(size_t(width) * height * 4, 0);
   rect(0, 0, width, height, background(), opacity);
-  static const std::array<uint8_t, 3> ansi[16] = {
-      {0, 0, 0},       {192, 0, 0},    {0, 192, 0},    {192, 192, 0},
-      {32, 96, 192},   {192, 0, 192},  {0, 192, 192},  {192, 192, 192},
-      {80, 80, 80},    {255, 80, 80},  {80, 255, 80},  {255, 255, 80},
-      {100, 140, 255}, {255, 80, 255}, {80, 255, 255}, {255, 255, 255}};
+  const auto &ansi = terminal_style::ansi;
   auto snapshot = term.snapshot();
   for (const auto &run : snapshot.runs) {
-    auto fg = run.style & 0x200 ? ansi[run.style & 15] : foreground();
+    auto fg = run.style & terminal_style::foregroundRGB ? terminal_style::rgb(run.style,true)
+              : run.style & terminal_style::foregroundSet ? ansi[run.style & 15] : foreground();
+    auto bg = run.style & terminal_style::backgroundRGB ? terminal_style::rgb(run.style,false)
+              : run.style & terminal_style::backgroundSet ? ansi[(run.style >> 4) & 15] : background();
+    bool explicitBackground = run.style & terminal_style::backgroundSet;
+    if (run.style & terminal_style::inverse) { std::swap(fg,bg); explicitBackground=true; }
     if (run.selected) {
       rect(run.column * cw, run.row * ch,
            width - run.column * cw < run.columns * cw ? width - run.column * cw
                                                       : run.columns * cw,
            ch, accent, 1);
       fg = background();
-    } else if (run.style & 0x100)
+    } else if (explicitBackground)
       rect(run.column * cw, run.row * ch, run.columns * cw, ch,
-           ansi[(run.style >> 4) & 15], styledOpacity);
+           bg, styledOpacity);
     int n = 1;
     unsigned cp =
         fl_utf8decode(run.text.data(), run.text.data() + run.text.size(), &n);

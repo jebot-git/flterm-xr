@@ -4,7 +4,8 @@
 #include <optional>
 #include <string>
 
-// SDL handles focused window selections. Windowless overlays use Wayland data-control.
+// Native Wayland PRIMARY and windowless overlays use asynchronous Wayland data-control.
+// SDL is retained for callers with a compatible windowed clipboard backend.
 class Clipboard {
     bool windowed_;
     std::future<std::optional<std::string>> operation_;

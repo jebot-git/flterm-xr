@@ -704,16 +704,25 @@ public:
     if (event == FL_PUSH || event == FL_DRAG || event == FL_RELEASE) {
       if (event == FL_PUSH)
         take_focus();
-      if (Fl::event_button() == FL_LEFT_MOUSE) {
-        app.term().selectCells((Fl::event_x() - x()) / r.cw,
-                               (Fl::event_y() - y()) / r.ch, event == FL_PUSH);
+      // event_button() is defined only for push/release, not FL_DRAG.
+      if (event == FL_DRAG ? (Fl::event_state() & FL_BUTTON1)
+                           : Fl::event_button() == FL_LEFT_MOUSE) {
+        // A GL subwindow receives coordinates local to its own surface.
+        app.term().selectCells(Fl::event_x() / r.cw,
+                               Fl::event_y() / r.ch, event == FL_PUSH);
         app.dirty = true;
-      } else if (event == FL_RELEASE && Fl::event_button() == FL_MIDDLE_MOUSE)
-        Fl::paste(*this, 0);
+      } else if (event == FL_RELEASE && Fl::event_button() == FL_MIDDLE_MOUSE) {
+        if (app.options.wayland) {
+          app.pasteTab = app.identities[&app.term()];
+          app.clipboard.paste(true);
+        } else Fl::paste(*this, 0);
+      }
       if (event == FL_RELEASE && Fl::event_button() == FL_LEFT_MOUSE) {
         auto text = app.term().selectionText();
-        if (!text.empty())
-          Fl::copy(text.data(), text.size(), 0);
+        if (!text.empty()) {
+          if (app.options.wayland) app.clipboard.copy(text,true);
+          else Fl::copy(text.data(), text.size(), 0);
+        }
       }
       return 1;
     }

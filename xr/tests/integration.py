@@ -104,6 +104,30 @@ try:
     subprocess.run(['wl-copy','--type','text/plain;charset=utf-8'],input=("printf '%s' 'Žluťoučký 日本語' > "+str(pasted)).encode(),env=paste_env,check=True,timeout=5)
     chord(['Control_L','Shift_L'],'v');key('Return')
     check(wait(lambda:pasted.exists() and pasted.read_text()=='Žluťoučký 日本語'),'FLTK Wayland clipboard paste preserves UTF-8')
+    # PRIMARY stays independent of the explicit Copy/Paste clipboard.
+    selected='PRIMARY_Žluťoučký'
+    primary_socket=next((runtime/'flterm-xr').glob('wayland-*.sock'))
+    ctl(primary_socket,"type printf '\\033[2J\\033[H%s' '"+selected+"'\r")
+    time.sleep(.3)
+    subprocess.run(['wl-copy','--type','text/plain;charset=utf-8'],input=b'CLIPBOARD_SENTINEL',env=paste_env,check=True,timeout=5)
+    geometry=windows()[0]['desktop']
+    x=int(geometry['x']);y=int(geometry['y'])+34+8
+    xtest.fake_input(xd,X.MotionNotify,x=x+1,y=y);xd.sync();time.sleep(.1)
+    xtest.fake_input(xd,X.ButtonPress,1);xd.sync();time.sleep(.05)
+    xtest.fake_input(xd,X.MotionNotify,x=x+len(selected)*8+1,y=y);xd.sync();time.sleep(.1)
+    xtest.fake_input(xd,X.ButtonRelease,1);xd.sync()
+    def selection(primary):
+        result=subprocess.run(['wl-paste',*(['--primary'] if primary else []),'--no-newline'],env=paste_env,capture_output=True,timeout=2)
+        return result.stdout.decode() if result.returncode==0 else None
+    check(wait(lambda:selection(True)==selected,timeout=5),'Left-drag selection publishes UTF-8 to Wayland PRIMARY')
+    check(selection(False)=='CLIPBOARD_SENTINEL','Primary selection leaves the Copy/Paste clipboard unchanged')
+    primary_pasted=runtime/'primary-pasted'
+    command="printf '%s' 'PRIMARY_日本語' > "+str(primary_pasted)
+    subprocess.run(['wl-copy','--primary','--type','text/plain;charset=utf-8'],input=command.encode(),env=paste_env,check=True,timeout=5)
+    time.sleep(.1)
+    xtest.fake_input(xd,X.ButtonPress,2);xtest.fake_input(xd,X.ButtonRelease,2);xd.sync();time.sleep(.15);key('Return')
+    check(wait(lambda:primary_pasted.exists() and primary_pasted.read_text()=='PRIMARY_日本語'),'Middle-click pastes external UTF-8 PRIMARY into the FLTerm PTY')
+    check(selection(False)=='CLIPBOARD_SENTINEL','Middle-click paste keeps the Copy/Paste clipboard independent')
     chord(['Super_L'],'t');check(wait(lambda:len(windows())==2),'Super+T creates another desktop terminal')
     paths=wait(lambda:list((runtime/'flterm-xr').glob('wayland-*.sock')) if len(list((runtime/'flterm-xr').glob('wayland-*.sock')))==2 else None)
     check(all(snapshot(path)['tabs']==1 for path in paths),'Desktop windows own separate control sockets and tab sets')

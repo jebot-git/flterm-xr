@@ -27,10 +27,10 @@
 #define _FL_TERM_H_
 class Fl_Term : public Fl_Widget {
     bool software_ = false;
-	uint16_t c_attr;		//current character attribute(color)
-	uint16_t save_attr;		//saved character attribute, used with save_x/save_y
+	uint64_t c_attr;		//current character attribute(color)
+	uint64_t save_attr;		//saved character attribute, used with save_x/save_y
 	char *buff;			//buffer for characters, one byte per char
-	uint16_t *attr;			//buffer for attributes, one byte per char
+	uint64_t *attr;			//buffer for attributes, one style per UTF-8 byte
 	int buff_size; 		//current buffer size, doubles at more_chars()
 	int *line;			//buffer for starting position of each line
 	int line_size;		//current max number of lines, doubles at more_lines()
@@ -54,7 +54,7 @@ class Fl_Term : public Fl_Widget {
 
 	bool bEscape;		//escape sequence processing mode
 	int ESC_idx;		//current index for ESC_code
-	char ESC_code[32];	//cumulating the current escape sequence before process
+	char ESC_code[256];	//cumulating the current escape sequence before process
 	char tabstops[256];
 
 	bool bInsert;		//insert mode, for inline editing for commands
@@ -68,8 +68,9 @@ class Fl_Term : public Fl_Widget {
 	bool bWraparound;
 	bool bOriginMode;
 
-	int bTitle;			//title mode, changed through escape sequence
-	int title_idx;
+    char control_string; // OSC, DCS, SOS, PM or APC; consumed through its terminator.
+    bool control_escape;
+    std::string control_payload;
 	char sTitle[256];	//window title set by host
 
 	char sPrompt[32];	//wait for sPrompt before next command when scripting
@@ -110,7 +111,7 @@ protected:
 	const unsigned char *telnet_options(const unsigned char *buf, int cnt);
 
 public:
-    struct Run { int row, column, columns; std::string text; uint16_t style; bool selected; };
+    struct Run { int row, column, columns; std::string text; uint64_t style; bool selected; };
     struct Snapshot { std::vector<Run> runs; int cursorColumn, cursorRow; bool cursor; };
     Snapshot snapshot();
     void cellSize(int width, int height);

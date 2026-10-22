@@ -1,3 +1,4 @@
+#include "terminal-style.hpp"
 //
 // "$Id: Fl_Term.cxx 38177 2024-12-24 10:08:20 $"
 //
@@ -188,7 +189,7 @@ void Fl_Term::clear()
 	line_size = 4096;
 	buff_size = 4096*64;
 	buff = (char *)realloc(buff, buff_size);
-	attr = (uint16_t *)realloc(attr, buff_size * sizeof(*attr));
+	attr = (uint64_t *)realloc(attr, buff_size * sizeof(*attr));
 	line = (int * )realloc(line, line_size*sizeof(int));
 	if ( line!=NULL ) memset(line, 0, line_size*sizeof(int) );
 	if ( buff!=NULL ) memset(buff, 0, buff_size);
@@ -199,7 +200,9 @@ void Fl_Term::clear()
 	c_attr = 7;//default black background, white foreground
 	recv0 = 0;
 	ESC_idx = 0;
-	bInsert = bEscape = bGraphic = bTitle = false;
+    memset(ESC_code, 0, sizeof(ESC_code));
+	bInsert = bEscape = bGraphic = false;
+    control_string = 0; control_escape = false; control_payload.clear();
 	bBracket = bAltScreen = bAppCursor = bOriginMode = false;
 	bWraparound = true;
 	bScrollbar = false;
@@ -270,7 +273,10 @@ void Fl_Term::draw()
 				if ( n==sel_r || n==sel_l ) break;
 			}
 			unsigned int font_color = VT_attr[(int)attr[j]&0x0f];
-			unsigned int bg_color = VT_attr[(int)((attr[j]>>4)&0x0f)];
+            unsigned int bg_color = VT_attr[(int)((attr[j]>>4)&0x0f)];
+            if (attr[j] & terminal_style::foregroundRGB) { auto c=terminal_style::rgb(attr[j],true); font_color=fl_rgb_color(c[0],c[1],c[2]); }
+            if (attr[j] & terminal_style::backgroundRGB) { auto c=terminal_style::rgb(attr[j],false); bg_color=fl_rgb_color(c[0],c[1],c[2]); }
+            if (attr[j] & terminal_style::inverse) std::swap(font_color,bg_color);
 			int wi = fl_width(buff+j, n-j);
 			if ( j>=sel_l && j<sel_r ) {
 				fl_color(selection_color());
@@ -478,10 +484,10 @@ void Fl_Term::next_line()
 		Fl::lock();
 		if ( line_size<65536 ) {	//double buffer size till 64k lines
 			char *old_buff = buff;
-			uint16_t *old_attr = attr;
+			uint64_t *old_attr = attr;
 			int *old_line = line;
 			buff = (char *)realloc(buff, buff_size*2);
-			attr = (uint16_t *)realloc(attr, buff_size*2*sizeof(*attr));
+			attr = (uint64_t *)realloc(attr, buff_size*2*sizeof(*attr));
 			line = (int  *)realloc(line, (line_size*2)*sizeof(int));
 			if ( buff!=NULL && attr!=NULL && line!=NULL ) {
 				memset(line+line_size, 0, line_size*sizeof(int));
@@ -524,17 +530,28 @@ void Fl_Term::append( const char *newtext, int len )
 	if ( bEscape ) p = vt100_Escape( p, zz-p );
 	while ( p < zz ) {
 		unsigned char c=*p++;
-		if ( bTitle ) {
-			if ( c==0x07 ) {
-				bTitle = false;
-				sTitle[title_idx]=0;
-				do_callback( this, (void *)sTitle );
-			}
-			else {
-				if ( title_idx<128 ) sTitle[title_idx++] = c;
-			}
-			continue;
-		}
+        if (control_string) {
+            const bool cancelled = c == 0x18 || c == 0x1a;
+            const bool terminated = (control_escape && c == '\\') ||
+                                    (control_string == ']' && c == 0x07);
+            if (cancelled || terminated) {
+                if (!cancelled && control_string == ']' &&
+                    (control_payload.starts_with("0;") || control_payload.starts_with("2;"))) {
+                    auto title = control_payload.substr(2, sizeof(sTitle)-1);
+                    memcpy(sTitle, title.data(), title.size()); sTitle[title.size()] = 0;
+                    do_callback(this, (void *)sTitle);
+                }
+                control_string = 0; control_escape = false; control_payload.clear();
+            } else if (c == 0x1b) {
+                control_escape = true;
+            } else {
+                control_escape = false;
+                // Unsupported control strings can contain arbitrary metadata.
+                // Bound storage but keep consuming until BEL/ST, even across reads.
+                if (control_payload.size() < 4096) control_payload += char(c);
+            }
+            continue;
+        }
 		switch ( c ) {
 			case 0x00:
 			case 0x0e:
@@ -615,7 +632,7 @@ void Fl_Term::append( const char *newtext, int len )
 			}
 			if ( bInsert )		//insert one space
 				vt100_Escape((unsigned char *)"[1@",3);
-			if ( cursor_x-line[cursor_y]>=size_x ) {
+			if ( (c&0xc0)!=0x80 && cursor_x-line[cursor_y]>=size_x ) {
 				int char_cnt = 0;
 				for ( int i=line[cursor_y]; i<cursor_x; i++ )
 					if ( (buff[i]&0xc0)!=0x80 ) char_cnt++;
@@ -719,9 +736,7 @@ const unsigned char *Fl_Term::vt100_Escape(const unsigned char *sz, int cnt)
 		}
 		switch( ESC_code[0] ) {
 		case '[':
-			if ( isalpha(ESC_code[ESC_idx-1])
-				|| ESC_code[ESC_idx-1]=='@'
-				|| ESC_code[ESC_idx-1]=='`' ) {
+			if ( ESC_idx > 1 && ESC_code[ESC_idx-1] >= 0x40 && ESC_code[ESC_idx-1] <= 0x7e ) {
 				bEscape = false;
 				int m0=0;	//used by [PsJ and [PsK
 				int n0=1;	//used by most, e.g. [PsA [PsB
@@ -937,37 +952,9 @@ const unsigned char *Fl_Term::vt100_Escape(const unsigned char *sz, int cnt)
 						}
 					}
 					break;
-				case 'm': {//text style, color attributes
-						char *p = ESC_code;
-						while ( p!=NULL ) {
-							m0 = atoi(++p);
-                            const int sgr = m0;
-							switch ( m0/10 ) {
-							case 0: if ( m0==0 ) c_attr = 7;	//normal
-									if ( m0==1 ) c_attr|=0x08;	//bright
-									if ( m0==7 ) c_attr =0x370;	//negative
-									break;
-							case 2: c_attr = 7; 				//normal
-									break;
-							case 3: if ( m0==39 ) m0 = 7;//default foreground
-									c_attr = (c_attr&0xfff8)+m0%10;
-									break;
-							case 4: if ( m0==49 ) m0 = 0;//default background
-									c_attr = (c_attr&0xff0f)+((m0%10)<<4);
-									break;
-							case 9: c_attr = (c_attr&0xfff0) + m0%10 + 8;
-									break;
-							case 10:c_attr = (c_attr&0xff0f) + ((m0%10+8)<<4);
-									break;
-							}
-                            if ((sgr >= 40 && sgr <= 47) || (sgr >= 100 && sgr <= 107)) c_attr |= 0x100;
-                            if (sgr == 49) c_attr &= ~0x100;
-                            if ((sgr >= 30 && sgr <= 37) || (sgr >= 90 && sgr <= 97)) c_attr |= 0x200;
-                            if (sgr == 39) c_attr &= ~0x200;
-							p = strchr(p, ';');
-						}
-					}
-					break;
+                case 'm': // ANSI, indexed and RGB rendition attributes.
+                    c_attr = terminal_style::sgr(c_attr, std::string_view(ESC_code + 1, ESC_idx - 2));
+                    break;
 				case 'r': //set margins and move cursor to home
 					if ( n1==1 && n0==1 ) n0=size_y;	//ESC[r
 					roll_top=n1-1; roll_bot=n0-1;
@@ -1046,15 +1033,15 @@ const unsigned char *Fl_Term::vt100_Escape(const unsigned char *sz, int cnt)
 			tabstops[cursor_x-line[cursor_y]] = 1;
 			bEscape = false;
 			break;
-		case ']': //set window title
-			if ( ESC_code[ESC_idx-1]==';' ) {
-				if ( ESC_code[1]=='0' ) {
-					bTitle = true;
-					title_idx = 0;
-				}
-				bEscape = false;
-			}
-			break;
+        case ']': // OSC: titles, shell integration, hyperlinks, palette queries...
+        case 'P': // DCS
+        case 'X': // SOS
+        case '^': // PM
+        case '_': // APC
+            control_string = ESC_code[0];
+            control_escape = false; control_payload.clear();
+            bEscape = false;
+            break;
 		case ')':
 		case '(': //character sets, 0 for line drawing
 			if ( ESC_idx==2 ) {
@@ -1071,8 +1058,8 @@ const unsigned char *Fl_Term::vt100_Escape(const unsigned char *sz, int cnt)
 			break;
 		default: bEscape = false;
 		}
-		if ( ESC_idx==31 ) bEscape = false;
-		if ( !bEscape ) { ESC_idx=0; memset(ESC_code, 0, 32); }
+		if ( ESC_idx >= int(sizeof(ESC_code))-1 ) bEscape = false;
+		if ( !bEscape ) { ESC_idx=0; memset(ESC_code, 0, sizeof(ESC_code)); }
 	}
 	return sz;
 }
