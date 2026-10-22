@@ -50,6 +50,9 @@ int Fl_Term::connect(HOST *newhost, const char **preply )
 {
 	int rc = 0;
 	if ( host->live() ) return rc;
+	free(main_screen_.text);
+	free(main_screen_.styles);
+	free(main_screen_.lines);
 	delete host;
 
 	host = newhost;
@@ -152,7 +155,6 @@ void Fl_Term::disconn()
 Fl_Term::Fl_Term(int X,int Y,int W,int H,const char *L, bool software) : Fl_Widget(X,Y,W,H,L), software_(software)
 {
 	bEcho = false;
-	bScrollbar = false;
 	host = new HOST();
 
 	*sTitle = 0;
@@ -186,6 +188,11 @@ Fl_Term::~Fl_Term()
 void Fl_Term::clear()
 {
 	Fl::lock();
+    free(main_screen_.text); free(main_screen_.styles); free(main_screen_.lines);
+    main_screen_ = {};
+    view_top_ = -1;
+    save_x = save_y = 0;
+    save_attr = 7;
 	line_size = 4096;
 	buff_size = 4096*64;
 	buff = (char *)realloc(buff, buff_size);
@@ -205,7 +212,6 @@ void Fl_Term::clear()
     control_string = 0; control_escape = false; control_payload.clear();
 	bBracket = bAltScreen = bAppCursor = bOriginMode = false;
 	bWraparound = true;
-	bScrollbar = false;
 	bCursor = true;
 	bPrompt = true;
 	memset(tabstops, 0, 256);
@@ -260,7 +266,7 @@ void Fl_Term::draw()
 		sel_l=sel_right; sel_r=sel_left;
 	}
 
-	int ly = screen_y;
+	int ly = viewTop();
 	int dx, dy=y();
 	for ( int i=0; i<size_y; i++ ) {
 		dx = x()+1;
@@ -299,23 +305,17 @@ void Fl_Term::draw()
 	}
 	dx = x()+fl_width(buff+line[cursor_y], cursor_x-line[cursor_y]);
 	dy = y()+(cursor_y-screen_y)*font_height;
-	bool editor = bCursor;
+	bool editor = bCursor && view_top_ < 0;
 	if ( bAltScreen) editor=false;
 	if ( host->status()==HOST_AUTHENTICATING ) editor=false;
 	if ( !show_editor(editor?dx:-1, dy+4, w()-dx-8, font_height) ) {
-		if ( bCursor ) {
+		if ( bCursor && view_top_ < 0 ) {
 			fl_color(FL_WHITE);		//draw a white bar as cursor
 			fl_rectf(dx, dy+font_height, font_width, 4);
 		}
 	}
 	
-	if ( bScrollbar) {
-		fl_color(FL_DARK3);			//draw scrollbar
-		fl_rectf(x()+w()-8, y(), 8, y()+h());
-		fl_color(FL_RED);			//draw slider
-		int slider_y = h()*screen_y/cursor_y;
-		fl_rectf(x()+w()-8, y()+slider_y-8, 8, 16);
-	}
+
 }
 int Fl_Term::handle(int e)
 {
@@ -327,20 +327,15 @@ int Fl_Term::handle(int e)
 		case FL_ENTER: return 1;
 		case FL_FOCUS: redraw(); return 1;
 		case FL_MOUSEWHEEL:
-			if ( !bAltScreen ) {
-				screen_y += Fl::event_dy();
-				if ( screen_y<0 ) screen_y = 0;
-				if ( screen_y>cursor_y ) screen_y = cursor_y;
-				bScrollbar = (screen_y < cursor_y-size_y+1);
-				redraw();
-			}
-			return 1;
+            scrollRows(Fl::event_dy() * 3);
+            redraw();
+            return 1;
 		case FL_PUSH:
 			if ( Fl::event_button()==FL_LEFT_MOUSE ) {
 				int x=Fl::event_x()/font_width;
 				int y=Fl::event_y()-Fl_Widget::y();
 				if ( Fl::event_clicks()==1 ) {	//double click to select word
-					y = y/font_height + screen_y;
+					y = std::clamp(y/font_height + viewTop(), 0, screen_y + size_y - 1);
 					sel_left = line[y]+x;
 					sel_right = sel_left;
 					while ( --sel_left>line[y] )
@@ -355,45 +350,16 @@ int Fl_Term::handle(int e)
 					redraw();
 					return 1;
 				}
-				if ( x>=size_x-2 && bScrollbar) {//push in scrollbar area
-					if ( y>0 && y<h() ) screen_y = y*cursor_y/h();
-					bDragSelect = false;
-					redraw();
-				}
-				else {								//push to start draging
-					y = y/font_height + screen_y;
-					sel_left = line[y]+x;
-					if ( sel_left>line[y+1] ) sel_left=line[y+1] ;
-					while ( (buff[sel_left]&0xc0)==0x80 ) sel_left--;
-					sel_right = sel_left;
-					bDragSelect = true;
-				}
+                selectCells(x, y/font_height, true);
 			}
 			return 1;
 		case FL_DRAG:
 			if ( Fl::event_button()==FL_LEFT_MOUSE ) {
 				int x = Fl::event_x()/font_width;
 				int y = Fl::event_y()-Fl_Widget::y();
-				if ( !bDragSelect && y>0 && y<h()) {
-					screen_y = y*cursor_y/h();
-				}
-				else {
-					if ( y<0 ) {
-						screen_y += y/8;
-						if ( screen_y<0 ) screen_y = 0;
-					}
-					if ( y>h() ) {
-						screen_y += (y-h())/8;
-						if ( screen_y>cursor_y ) screen_y=cursor_y;
-					}
-					y = y/font_height + screen_y;
-					if ( y<0 ) y=0;
-					if ( !bAltScreen && y>cursor_y ) y = cursor_y;
-					//cursor_y may not be the last line in AlterScreen mode
-					sel_right = line[y]+x;
-					if ( sel_right>line[y+1] ) sel_right=line[y+1];
-					while ( (buff[sel_right]&0xc0)==0x80 ) sel_right++;
-				}
+                if (y < 0) scrollRows(y/8);
+                if (y > h()) scrollRows((y-h())/8);
+                selectCells(x, std::clamp(y/font_height, 0, size_y-1), false);
 				redraw();
 			}
 			return 1;
@@ -442,22 +408,8 @@ int Fl_Term::handle(int e)
 #endif
 			int key = Fl::event_key();
 			switch (key) {
-			case FL_Page_Up:
-				if ( !bAltScreen ) {
-					bScrollbar = true;
-					screen_y -= size_y-1;
-					if ( screen_y<0 ) screen_y = 0;
-					redraw();
-				}
-				break;
-			case FL_Page_Down:
-				if ( !bAltScreen ) {
-					screen_y += size_y-1;
-					if ( screen_y>cursor_y-size_y ) bScrollbar = false;
-					if ( screen_y>cursor_y ) screen_y = cursor_y;
-					redraw();
-				}
-				break;
+			case FL_Page_Up: scrollRows(1-size_y); redraw(); break;
+			case FL_Page_Down: scrollRows(size_y-1); redraw(); break;
 			case FL_Up:	  host->write(bAppCursor?"\033OA":"\033[A",3); break;
 			case FL_Down: host->write(bAppCursor?"\033OB":"\033[B",3); break;
 			case FL_Right:host->write(bAppCursor?"\033OC":"\033[C",3); break;
@@ -467,68 +419,127 @@ int Fl_Term::handle(int e)
 			case FL_Enter:
 			default:
 				write(Fl::event_text(), Fl::event_length());
-				if ( screen_y < cursor_y-size_y+1 )
-					screen_y = cursor_y-size_y+1;
+                scrollToBottom();
 			}
 			return 1;
 	}
 	return Fl_Widget::handle(e);
 }
+void Fl_Term::reserveBuffer(int bytes, int rows)
+{
+    if (bytes > buff_size) {
+        int capacity = std::max(bytes, buff_size * 2);
+        // Allocate both arrays before replacing either, so allocation failure
+        // never leaves a dangling buffer or mismatched UTF-8 attributes.
+        char *next = static_cast<char *>(calloc(capacity, 1));
+        auto *next_attr = static_cast<uint64_t *>(calloc(capacity, sizeof(*attr)));
+        if (!next || !next_attr) {
+            free(next); free(next_attr); throw std::bad_alloc();
+        }
+        memcpy(next, buff, buff_size);
+        memcpy(next_attr, attr, buff_size * sizeof(*attr));
+        free(buff); free(attr); buff = next; attr = next_attr; buff_size = capacity;
+    }
+    if (rows > line_size) {
+        int capacity = std::max(rows, line_size * 2);
+        auto *next = static_cast<int *>(calloc(capacity, sizeof(*line)));
+        if (!next) throw std::bad_alloc();
+        memcpy(next, line, line_size * sizeof(*line));
+        free(line); line = next; line_size = capacity;
+    }
+}
 void Fl_Term::next_line()
 {
-	line[++cursor_y]=cursor_x;
-	if ( screen_y==cursor_y-size_y ) screen_y++;
-	if ( line[cursor_y+1]<cursor_x ) line[cursor_y+1]=cursor_x;
-
-	if ( cursor_x>buff_size-1024 || cursor_y>line_size-3 ) {
-		Fl::lock();
-		if ( line_size<65536 ) {	//double buffer size till 64k lines
-			char *old_buff = buff;
-			uint64_t *old_attr = attr;
-			int *old_line = line;
-			buff = (char *)realloc(buff, buff_size*2);
-			attr = (uint64_t *)realloc(attr, buff_size*2*sizeof(*attr));
-			line = (int  *)realloc(line, (line_size*2)*sizeof(int));
-			if ( buff!=NULL && attr!=NULL && line!=NULL ) {
-				memset(line+line_size, 0, line_size*sizeof(int));
-				memset(buff+buff_size, 0, buff_size);
-				std::fill(attr+buff_size, attr+buff_size*2, 0);
-				buff_size*=2;
-				line_size*=2;
-			}
-			else {//clear buffer if failed to double
-				if ( attr==NULL ) attr = old_attr;
-				if ( buff==NULL ) buff = old_buff;
-				if ( line==NULL ) line = old_line;
-				clear();
-			}
-		}
-		else {						//erase half of buffer at 64k lines
-			int middle = line[32768];
-			for ( int i=32768; i<cursor_y+2; i++ ) line[i]-=middle;
-			memmove(line, line+32768, 32768*sizeof(int));
-			memset(line+32768, 0, 32768*sizeof(int));
-			screen_y-=32768; if ( screen_y<0 ) screen_y=0;
-			cursor_y-=32768;
-			cursor_x-=middle;
-			recv0-=middle; if ( recv0<0 ) recv0=0;
-			memmove(attr, attr+middle, line[cursor_y+1]*sizeof(*attr));
-			std::fill(attr+line[cursor_y+1], attr+buff_size, 0);
-			memmove(buff, buff+middle, line[cursor_y+1]);
-			memset(buff+line[cursor_y+1], 0, 65536*64-line[cursor_y+1]);
-		}
-		Fl::unlock();
-	}
+    reserveBuffer(cursor_x + 1024, cursor_y + size_y + 4);
+    line[++cursor_y] = cursor_x;
+    if (screen_y == cursor_y-size_y) screen_y++;
+    if (line[cursor_y+1] < cursor_x) line[cursor_y+1] = cursor_x;
+}
+void Fl_Term::trimHistory()
+{
+    if (bAltScreen || screen_y <= history_limit_) return;
+    int removed = screen_y - history_limit_, bytes = line[removed];
+    int last = std::max(cursor_y + 1, screen_y + size_y);
+    while (last > cursor_y + 1 && line[last] == 0) --last;
+    int end = std::max(cursor_x, line[last]);
+    memmove(buff, buff + bytes, end - bytes);
+    memmove(attr, attr + bytes, (end - bytes) * sizeof(*attr));
+    memset(buff + end - bytes, 0, bytes);
+    std::fill(attr + end - bytes, attr + end, 0);
+    for (int i = removed; i <= last; ++i)
+        line[i-removed] = std::max(0, line[i] - bytes);
+    std::fill(line + last - removed + 1, line + last + 1, 0);
+    cursor_x -= bytes; cursor_y -= removed; screen_y -= removed;
+    if (view_top_ >= 0) view_top_ = std::max(0, view_top_ - removed);
+    sel_left = std::max(0, sel_left - bytes);
+    sel_right = std::max(0, sel_right - bytes);
+    recv0 = std::max(0, recv0 - bytes);
+}
+void Fl_Term::alternateBuffer(bool enable)
+{
+    if (enable == bAltScreen) return;
+    if (enable) {
+        auto *text = static_cast<char *>(calloc(262144, 1));
+        auto *styles = static_cast<uint64_t *>(calloc(262144, sizeof(*attr)));
+        auto *lines = static_cast<int *>(calloc(4096, sizeof(*line)));
+        if (!text || !styles || !lines) {
+            free(text); free(styles); free(lines); throw std::bad_alloc();
+        }
+        main_screen_ = {buff, attr, line, buff_size, line_size, cursor_x, cursor_y,
+                        screen_y, view_top_, sel_left, sel_right, save_x, save_y,
+                        roll_top, roll_bot, recv0, c_attr, save_attr};
+        buff = text; attr = styles; line = lines;
+        buff_size = 262144; line_size = 4096;
+        cursor_x = cursor_y = screen_y = 0;
+        view_top_ = -1; sel_left = sel_right = recv0 = save_x = save_y = 0;
+        roll_top = 0; roll_bot = size_y-1;
+        bAltScreen = true;
+        screen_clear(2);
+    } else {
+        free(buff); free(attr); free(line);
+        auto saved = main_screen_; main_screen_ = {};
+        buff = saved.text; attr = saved.styles; line = saved.lines;
+        buff_size = saved.bytes; line_size = saved.rows;
+        cursor_x = saved.x; cursor_y = saved.y; screen_y = saved.top;
+        view_top_ = saved.view; sel_left = saved.left; sel_right = saved.right;
+        save_x = saved.saved_x; save_y = saved.saved_y;
+        roll_top = std::clamp(saved.margin_top, 0, size_y-1);
+        roll_bot = std::clamp(saved.margin_bottom, roll_top, size_y-1);
+        recv0 = saved.received; c_attr = saved.style; save_attr = saved.saved_style;
+        screen_y = std::max(screen_y, cursor_y - size_y + 1);
+        bAltScreen = false;
+    }
+}
+// A whole-screen scroll adds a physical row to history. Partial scroll regions
+// and alternate screens continue to modify only their own visible cells.
+void Fl_Term::scrollScreenUp()
+{
+    const int row = cursor_y - screen_y;
+    const int column = cursor_x - line[cursor_y];
+    const int bottom = screen_y + size_y - 1;
+    int tail = line[screen_y];
+    for (int row = screen_y+1; row <= bottom+1; ++row) {
+        if (line[row] == 0) line[row] = tail;
+        tail = std::max(tail, line[row]);
+    }
+    cursor_y = bottom;
+    cursor_x = line[bottom+1];
+    next_line();
+    buff_clear(cursor_x, size_x);
+    line[cursor_y+1] = cursor_x + size_x;
+    cursor_y = screen_y + row;
+    cursor_x = line[cursor_y] + std::min(column, size_x-1);
 }
 void Fl_Term::append( const char *newtext, int len )
 {
 	const unsigned char *p = (const unsigned char *)newtext;
 	const unsigned char *zz = p+len;
 	
-	append_mtx.lock();	//only one thread can append to buffer at a time
+	std::lock_guard<std::mutex> lock(append_mtx);
 	if ( fpLogFile!=NULL ) fwrite( newtext, 1, len, fpLogFile );
 	if ( bEscape ) p = vt100_Escape( p, zz-p );
 	while ( p < zz ) {
+        reserveBuffer(cursor_x + 1024, screen_y + size_y + 4);
 		unsigned char c=*p++;
         if (control_string) {
             const bool cancelled = c == 0x18 || c == 0x1a;
@@ -654,10 +665,11 @@ void Fl_Term::append( const char *newtext, int len )
 		if ( strncmp(p, sPrompt, iPrompt)==0 ) bPrompt=true;
 	}
 	redraw_pending=true;
-	append_mtx.unlock();
+    trimHistory();
 }
 void Fl_Term::buff_clear(int offset, int len)
 {
+    reserveBuffer(offset + len + 1024, screen_y + size_y + 4);
 	memset(buff+offset, ' ', len);
 	std::fill(attr+offset, attr+offset+len, 7);
 }
@@ -889,6 +901,11 @@ const unsigned char *Fl_Term::vt100_Escape(const unsigned char *sz, int cnt)
 				case 'Z': //cursor backward n0 tab stops
 					break;
 				case 'S': // scroll up n0 lines
+                    n0 = std::min(n0, roll_bot - roll_top + 1);
+                    if (!bAltScreen && roll_top == 0 && roll_bot == size_y-1) {
+                        while (n0-- > 0) scrollScreenUp();
+                        break;
+                    }
 					for ( int i=roll_top; i<=roll_bot-n0; i++ ) {
 						memcpy( buff+line[screen_y+i],
 								buff+line[screen_y+i+n0], size_x);
@@ -927,8 +944,7 @@ const unsigned char *Fl_Term::vt100_Escape(const unsigned char *sz, int cnt)
 						case 7: bWraparound = true; break;
 						case 25:	bCursor = true; break;
 						case 2004: bBracket = true; break;
-						case 1049: bAltScreen = true;//?1049h alternate screen
-								screen_clear(2);
+                        case 1049: alternateBuffer(true); break;
 						}
 					}
 					break;
@@ -942,13 +958,7 @@ const unsigned char *Fl_Term::vt100_Escape(const unsigned char *sz, int cnt)
 						case 7: bWraparound= false; break;
 						case 25:	bCursor= false; break;
 						case 2004: bBracket= false; break;
-						case 1049: bAltScreen= false;//?1049l alternate screen
-								cursor_y = screen_y;
-								cursor_x = line[cursor_y];
-								for ( int i=1; i<=size_y+1; i++ )
-									line[cursor_y+i] = 0;
-								screen_y = cursor_y-size_y+1;
-								if ( screen_y<0 ) screen_y = 0;
+                        case 1049: alternateBuffer(false); break;
 						}
 					}
 					break;
@@ -999,12 +1009,15 @@ const unsigned char *Fl_Term::vt100_Escape(const unsigned char *sz, int cnt)
 				int x = cursor_x-line[cursor_y];
 				cursor_x = line[++cursor_y]+x;
 			}
-			else {								//scroll
+            else if (!bAltScreen && roll_top == 0 && roll_bot == size_y-1) {
+                scrollScreenUp();
+            }
+			else {                                 // scroll a restricted region
 				int len = line[screen_y+roll_bot+1]-line[screen_y+roll_top+1];
 				int x = cursor_x-line[cursor_y];
-				memcpy(buff+line[screen_y+roll_top], 
+				memmove(buff+line[screen_y+roll_top],
 						buff+line[screen_y+roll_top+1], len);
-				memcpy(attr+line[screen_y+roll_top], 
+				memmove(attr+line[screen_y+roll_top],
 						attr+line[screen_y+roll_top+1], len*sizeof(*attr));
 				len = line[screen_y+roll_top+1]-line[screen_y+roll_top];
 				for ( int i=roll_top+1; i<=roll_bot; i++ )
@@ -1113,7 +1126,9 @@ void Fl_Term::srch(const char *sstr)
 		if ( i==-1 ) {
 			sel_left = p-l-buff;
 			sel_right = sel_left+l;
-			while ( line[screen_y]>sel_left ) screen_y--;
+			int top = viewTop();
+            while (top > 0 && line[top] > sel_left) --top;
+            view_top_ = top == screen_y ? -1 : top;
 			break;
 		}
 	}

@@ -17,6 +17,7 @@
 #include <FL/Fl.H>
 #include <FL/fl_draw.H>
 #include "host.h"
+#include <algorithm>
 #include <atomic>
 #include <mutex>
 #include <string>
@@ -40,7 +41,22 @@ class Fl_Term : public Fl_Widget {
 	int	cursor_y;		//index to line buffer for current row of text
 	int save_x;			//save_x/save_y also used to save and restore cursor
 	int save_y;			//previous cursor_y when switch to alternate screen
-	int screen_y;		//the line at top of screen
+	int screen_y;        // live parser origin, independent of the history view
+    int view_top_ = -1; // -1 follows output; otherwise an absolute history row
+    static constexpr int history_limit_ = 10000;
+    struct MainScreen {
+        char *text = nullptr;
+        uint64_t *styles = nullptr;
+        int *lines = nullptr;
+        int bytes, rows, x, y, top, view, left, right, saved_x, saved_y;
+        int margin_top, margin_bottom, received;
+        uint64_t style, saved_style;
+    } main_screen_;
+    int viewTop() const { return view_top_ < 0 ? screen_y : std::min(view_top_, screen_y); }
+    void reserveBuffer(int bytes, int rows);
+    void trimHistory();
+    void alternateBuffer(bool enable);
+    void scrollScreenUp();
 	int roll_top;
 	int roll_bot;		//the range of lines that will scroll in alterscreen
 	int sel_left;
@@ -62,8 +78,6 @@ class Fl_Term : public Fl_Widget {
 	bool bCursor;		//display cursor or not
 	bool bAppCursor;	//app cursor mode for vi
 	bool bAltScreen;	//alternative screen for vi
-	bool bScrollbar;	//show scrollbar when true
-	bool bDragSelect;	//mouse dragged to select text, instead of scroll text
 	bool bBracket;		//bracketed paste mode
 	bool bWraparound;
 	bool bOriginMode;
@@ -117,6 +131,9 @@ public:
     void cellSize(int width, int height);
     void grid(int cols, int rows);
     void scrollRows(int amount);
+    void scrollToBottom();
+    int historyRows() const { return bAltScreen ? 0 : screen_y; }
+    int scrollOffset() const { return screen_y - viewTop(); }
     void pasteText(const std::string &text);
     void selectCells(int column, int row, bool begin);
     void selectAll();

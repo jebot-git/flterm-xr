@@ -186,7 +186,7 @@ void Renderer::render(Fl_Term &term, int tab, int count) {
     rect(snapshot.cursorColumn * cw, snapshot.cursorRow * ch + ch - 2, cw, 2,
          foreground(), 1);
   int column = snapshot.cursorColumn;
-  for (size_t i = 0; i < preedit.size();) {
+  for (size_t i = 0; i < preedit.size() && term.scrollOffset() == 0;) {
     int n = 1;
     unsigned cp =
         fl_utf8decode(preedit.data() + i, preedit.data() + preedit.size(), &n);

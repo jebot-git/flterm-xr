@@ -75,6 +75,7 @@ static void help() {
          " --layout-file FILE --no-save-layout  Overlay persistence only\n"
          " --seconds N --screenshot FILE --report FILE  Bounded validation\n"
          " Ctrl+Shift+T/W: new/close tab; Ctrl+PageUp/PageDown: switch tabs.\n"
+         " Shift+PageUp/PageDown: scroll history; Shift+Home/End: oldest/live.\n"
          " Ctrl+Shift+C/V/A: copy/paste/select all; F12 hides XR, Super+F12 "
          "shows it.\n"
          " XR: Ctrl+Alt+arrows move; add Shift to resize; PageUp/Down adjust "
@@ -349,6 +350,17 @@ struct App {
       }
     }
     bool ctrl = mod & KMOD_CTRL, shift = mod & KMOD_SHIFT, alt = mod & KMOD_ALT;
+    if (shift && !ctrl && !alt && !(mod & KMOD_GUI) && !tabs.empty() &&
+        (sc == SDL_SCANCODE_PAGEUP || sc == SDL_SCANCODE_PAGEDOWN ||
+         sc == SDL_SCANCODE_HOME || sc == SDL_SCANCODE_END)) {
+      if (down) {
+        if (sc == SDL_SCANCODE_END) term().scrollToBottom();
+        else term().scrollRows(sc == SDL_SCANCODE_HOME ? -10000 :
+                             (sc == SDL_SCANCODE_PAGEUP ? -1 : 1) * (term().sizeY()-1));
+        dirty = true;
+      }
+      return consume();
+    }
     if (ctrl && !alt && !(mod & KMOD_GUI)) {
       if ((shift && (sc == SDL_SCANCODE_T || sc == SDL_SCANCODE_W)) ||
           sc == SDL_SCANCODE_PAGEUP || sc == SDL_SCANCODE_PAGEDOWN) {
@@ -464,6 +476,7 @@ struct App {
     }
     }
     if (!bytes.empty()) {
+      term().scrollToBottom();
       term().write(bytes.data(), bytes.size());
       dirty = true;
     }
@@ -481,6 +494,8 @@ struct App {
             {"active", active + 1},
             {"cols", options.cols},
             {"rows", options.rows},
+            {"history_rows", tabs.empty() ? 0 : tabs[active]->historyRows()},
+            {"scroll_offset", tabs.empty() ? 0 : tabs[active]->scrollOffset()},
             {"font", renderer.choice.path},
             {"font_pixels", renderer.ch},
             {"light", renderer.light},
@@ -532,9 +547,10 @@ struct App {
         int index = 0;
         if (in >> index && index > 0)
           select(index - 1);
-      } else if (msg.starts_with("type ") && !tabs.empty())
+      } else if (msg.starts_with("type ") && !tabs.empty()) {
+        term().scrollToBottom();
         term().write(msg.data() + 5, msg.size() - 5);
-      else if (!options.desktop) {
+      } else if (!options.desktop) {
         std::istringstream in(msg.substr(msg.find(' ') + 1));
         float a = 0, b = 0, c = 0;
         if (msg == "reset-layout")
@@ -954,6 +970,7 @@ int main(int argc, char **argv) try {
       for (auto &event : app.keyboard->pump()) {
         if (event.type == SDL_TEXTINPUT) {
           if (app.visible) {
+            app.term().scrollToBottom();
             app.term().write(event.text.text, strlen(event.text.text));
             app.dirty = true;
           }

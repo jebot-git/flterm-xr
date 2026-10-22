@@ -151,3 +151,23 @@ clipboard helpers were ported from Ghostty XR; its notice is retained in
 `xr/LICENSE.ghostty-xr`. DomeD's MIT-licensed Appearance/menu adapters retain their
 SPDX headers. Exact source revisions are recorded in `xr/upstream.json`.
 GNU Unifont's font licences and exception are included under `xr/fonts/`.
+
+### Scrollback
+
+Each tab retains up to 10,000 rows above the live screen. Mouse-wheel up shows
+older output; wheel down moves toward live output (three rows per wheel step reported by the input backend), in
+both desktop and XR modes. Shift+PageUp/PageDown moves by a page, Shift+Home
+jumps to the oldest retained row, and Shift+End returns to live output. Typing
+or pasting also returns to the live prompt. Ctrl+PageUp/PageDown still switches
+tabs, and XR Ctrl+Alt+PageUp/PageDown still adjusts depth.
+
+The history view stays anchored while new output arrives, until its rows are
+evicted. Text selection works in history, retaining UTF-8 and color attributes.
+Alternate-screen applications keep their own screen and leave normal-screen
+history intact; the wheel does not expose history while they are active.
+No scrollbar is drawn and no terminal columns are reserved for one.
+
+The `scrollback` CTest covers bounds, output anchoring, selection, UTF-8/styles,
+resize, alternate screens, scroll regions and scrollbar-free rendering. The
+private DomeD integration test also checks actual wheel and scrollback shortcut
+input; control-socket status includes `history_rows` and `scroll_offset`.
