@@ -62,7 +62,9 @@ is never contacted when FLTerm is selected.
 
 The FLTK window exports its actual File/Edit/View commands through DBusMenu and
 the Wayland appmenu protocol, so DomeD's universal menu and keyboard navigation
-can activate them. Its OpenGL canvas uses nearest-neighbour bitmap pixels.
+can activate them. Inside a DomeD session, the local menu bar is hidden and its
+space is reclaimed by the tab selector and terminal. Outside DomeD, the local
+menu bar remains available. Its OpenGL canvas uses nearest-neighbour bitmap pixels.
 DomeD's saved font family, native strike, 1×/2× scale, light/dark palette and
 accent update running desktop and XR terminals without replacing their PTYs.
 CLI font and size overrides remain independent. Desktop layout and IME use the
@@ -121,7 +123,7 @@ hidden frames, shell survival and a live BDF swapchain resize. An optional local
 Khronos validation layer can be placed under `build/validation/layers`.
 Its reports and terminal capture are under `artifacts/xr/`.
 
-On 2026-10-22, all five CTest executables, 21 desktop/control integration checks
+On 2026-10-22, all five CTest executables, 23 desktop/control integration checks
 and 12 simulated OpenXR checks passed, including a loaded Khronos core validation
 layer and a live font/swapchain resize. The terminal parser/PTY/raster test also
 passed under AddressSanitizer and UndefinedBehaviorSanitizer (framework leak

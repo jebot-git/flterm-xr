@@ -110,6 +110,12 @@ try:
     menu=wait(lambda:snapshot(paths[0]) if snapshot(paths[0])['menu_service'] else None)
     layout_text=subprocess.check_output(['gdbus','call','--session','--dest',menu['menu_service'],'--object-path',menu['menu_path'],'--method','com.canonical.dbusmenu.GetLayout','--','0','-1','[]'],text=True,timeout=5)
     check(all(label in layout_text for label in ['New tab','Close tab','Copy','Paste','Show XR terminal']),'FLTK commands are exported as native DomeD universal menus')
+    for label,expected in [('New tab',2),('Close tab',1)]:
+        item=re.search(r"\((\d+), \{'label': <'"+label+r"'>",layout_text)
+        assert item,'Missing exported command: '+label
+        subprocess.run(['gdbus','call','--session','--dest',menu['menu_service'],'--object-path',menu['menu_path'],
+                        '--method','com.canonical.dbusmenu.Event',item[1],'clicked','<0>','0'],check=True,capture_output=True,text=True,timeout=5)
+        check(wait(lambda:snapshot(paths[0])['tabs']==expected),'Universal '+label+' works with the local menu bar hidden')
     chord(['Control_L','Shift_L'],'t')
     check(wait(lambda:sorted(snapshot(path)['tabs'] for path in paths)==[1,2]),'Ctrl+Shift+T adds a tab only to the focused desktop window')
     chord(['Super_L'],'F12');check(wait(lambda:snapshot(overlay_path)['visible']),'Super+F12 shows the existing FLTerm overlay')

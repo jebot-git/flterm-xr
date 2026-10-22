@@ -761,6 +761,7 @@ class TerminalWindow : public Fl_Double_Window {
   std::unique_ptr<DesktopMenu> exported;
   std::string signature;
   int cellWidth = 0, cellHeight = 0;
+  static int controlsHeight() { return dx::dome() ? 34 : 64; }
   static void action(Fl_Widget *w, void *data) {
     auto self = static_cast<TerminalWindow *>(data);
     auto bar = static_cast<Fl_Menu_Bar *>(w);
@@ -794,9 +795,11 @@ class TerminalWindow : public Fl_Double_Window {
 
 public:
   explicit TerminalWindow(App &a)
-      : Fl_Double_Window(a.renderer.width, a.renderer.height + 64, "FLTerm"),
-        app(a), menu(0, 0, w(), 30), tabs(4, 32, w() - 8, 28),
-        canvas(0, 64, w(), h() - 64, a) {
+      : Fl_Double_Window(a.renderer.width,
+                         a.renderer.height + controlsHeight(), "FLTerm"),
+        app(a), menu(0, 0, w(), 30),
+        tabs(4, controlsHeight() - 32, w() - 8, 28),
+        canvas(0, controlsHeight(), w(), h() - controlsHeight(), a) {
     xclass("org.domed.FLTerm");
     menu.add("File/New tab", FL_CTRL | FL_SHIFT | 't', action, this);
     menu.add("File/New window", FL_CTRL | FL_SHIFT | 'n', action, this);
@@ -814,6 +817,9 @@ public:
         },
         this);
     end();
+    // Keep the command model for DBusMenu while DomeD renders the only menu bar.
+    if (dx::dome())
+      menu.hide();
     resizable(canvas);
     size_range(160, 160);
     callback([](Fl_Widget *, void *) { stopped = 1; });
