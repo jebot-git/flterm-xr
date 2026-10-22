@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=FLTerm XR
+Comment=Persistent native OpenXR terminal overlay
+Exec=@CMAKE_INSTALL_FULL_BINDIR@/flterm-xr-launch --placement 20
+Icon=utilities-terminal
+Terminal=false
+Categories=System;TerminalEmulator;X-WiVRn-VR;

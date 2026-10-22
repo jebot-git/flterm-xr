@@ -19,14 +19,18 @@
 #include "host.h"
 #include <atomic>
 #include <mutex>
+#include <string>
+#include <vector>
+#include <cstdint>
 
 #ifndef _FL_TERM_H_
 #define _FL_TERM_H_
 class Fl_Term : public Fl_Widget {
-	char c_attr;		//current character attribute(color)
-	char save_attr;		//saved character attribute, used with save_x/save_y
+    bool software_ = false;
+	uint16_t c_attr;		//current character attribute(color)
+	uint16_t save_attr;		//saved character attribute, used with save_x/save_y
 	char *buff;			//buffer for characters, one byte per char
-	char *attr;			//buffer for attributes, one byte per char
+	uint16_t *attr;			//buffer for attributes, one byte per char
 	int buff_size; 		//current buffer size, doubles at more_chars()
 	int *line;			//buffer for starting position of each line
 	int line_size;		//current max number of lines, doubles at more_lines()
@@ -106,7 +110,20 @@ protected:
 	const unsigned char *telnet_options(const unsigned char *buf, int cnt);
 
 public:
-	Fl_Term(int X,int Y,int W,int H,const char* L=0);
+    struct Run { int row, column, columns; std::string text; uint16_t style; bool selected; };
+    struct Snapshot { std::vector<Run> runs; int cursorColumn, cursorRow; bool cursor; };
+    Snapshot snapshot();
+    void cellSize(int width, int height);
+    void grid(int cols, int rows);
+    void scrollRows(int amount);
+    void pasteText(const std::string &text);
+    void selectCells(int column, int row, bool begin);
+    void selectAll();
+    std::string selectionText();
+    bool applicationCursor() const { return bAppCursor; }
+    bool bracketedPaste() const { return bBracket; }
+    bool alternateScreen() const { return bAltScreen; }
+	Fl_Term(int X,int Y,int W,int H,const char* L=0, bool software=false);
 	~Fl_Term();
 	void clear();
 	int  handle(int e);

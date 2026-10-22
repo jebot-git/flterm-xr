@@ -86,7 +86,7 @@ public:
 	{
 		return host_cb1(host_data_, prompt, echo);
 	}
-	int live() { return reader.joinable(); }
+	virtual int live() { return reader.joinable(); }
 	int status() { return state; }
 	void status(int s) { state = s; }
 	void print(const char *fmt, ...);

@@ -1,0 +1,14 @@
+{
+  "repository": "https://github.com/powerline/fonts",
+  "commit": "a029626780dd4af32f15a3e708a5b00528c22f1d",
+  "files": {
+    "DejaVu Sans Mono for Powerline.ttf": {
+      "url": "https://raw.githubusercontent.com/powerline/fonts/a029626780dd4af32f15a3e708a5b00528c22f1d/DejaVuSansMono/DejaVu%20Sans%20Mono%20for%20Powerline.ttf",
+      "sha256": "af1868d514095dc61f090a876e4413a4ebadf4c81e8748f9fcbb7c69eac95853"
+    },
+    "LICENSE.txt": {
+      "url": "https://raw.githubusercontent.com/powerline/fonts/a029626780dd4af32f15a3e708a5b00528c22f1d/DejaVuSansMono/LICENSE.txt",
+      "sha256": "a30f2466a95cd1eaeff6041692f43469edcca052d002e877015a819c6e31c194"
+    }
+  }
+}

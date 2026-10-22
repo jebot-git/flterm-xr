@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=FLTerm (DomeD)
+Comment=FLTK terminal with independent Wayland windows
+Exec=@CMAKE_INSTALL_FULL_BINDIR@/flterm-xr --wayland
+Icon=utilities-terminal
+Terminal=false
+Categories=System;TerminalEmulator;
+StartupWMClass=org.domed.FLTerm

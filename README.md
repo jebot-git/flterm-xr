@@ -1,3 +1,8 @@
+# FLTerm XR / DomeD
+
+This fork adds native OpenXR overlays and an independent FLTK Wayland frontend.
+See [build instructions, DomeD integration and current limits](README.XR.md).
+
 # [FLTerm](http://yongchaofan.github.io/FLTerm)
 
 [![Build Status](https://travis-ci.org/pages-themes/minimal.svg?branch=master)](https://travis-ci.org/pages-themes/minimal) 

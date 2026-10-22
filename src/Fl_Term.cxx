@@ -15,6 +15,8 @@
 //     https://github.com/yongchaofan/tinyTerm2/issues/new
 //
 #include <thread>
+#include <algorithm>
+#include <cwchar>
 #include "Fl_Term.h"
 #include <FL/fl_ask.H>
 #include <FL/filename.H>
@@ -146,7 +148,7 @@ void Fl_Term::disconn()
 	host->disconn();
 }
 
-Fl_Term::Fl_Term(int X,int Y,int W,int H,const char *L) : Fl_Widget(X,Y,W,H,L)
+Fl_Term::Fl_Term(int X,int Y,int W,int H,const char *L, bool software) : Fl_Widget(X,Y,W,H,L), software_(software)
 {
 	bEcho = false;
 	bScrollbar = false;
@@ -162,11 +164,11 @@ Fl_Term::Fl_Term(int X,int Y,int W,int H,const char *L) : Fl_Widget(X,Y,W,H,L)
 	LogFileName = NULL;
 
 	line = NULL;
-	buff = attr = NULL;
+	buff = NULL; attr = NULL;
 	clear();
 
-	textfont(FL_COURIER);
-	textsize(16);
+	if (!software_) { textfont(FL_COURIER); textsize(16); }
+    else { font_face = FL_COURIER; font_size = font_height = 16; font_width = 8; }
 	size_x = w()/font_width;
 	size_y = h()/font_height;
 	roll_top = 0;
@@ -186,11 +188,11 @@ void Fl_Term::clear()
 	line_size = 4096;
 	buff_size = 4096*64;
 	buff = (char *)realloc(buff, buff_size);
-	attr = (char *)realloc(attr, buff_size);
+	attr = (uint16_t *)realloc(attr, buff_size * sizeof(*attr));
 	line = (int * )realloc(line, line_size*sizeof(int));
 	if ( line!=NULL ) memset(line, 0, line_size*sizeof(int) );
 	if ( buff!=NULL ) memset(buff, 0, buff_size);
-	if ( attr!=NULL ) memset(attr, 0, buff_size);
+	if ( attr!=NULL ) std::fill(attr, attr+buff_size, 0);
 	cursor_y = cursor_x = 0;
 	screen_y = 0;
 	sel_left = sel_right= 0;
@@ -476,15 +478,15 @@ void Fl_Term::next_line()
 		Fl::lock();
 		if ( line_size<65536 ) {	//double buffer size till 64k lines
 			char *old_buff = buff;
-			char *old_attr = attr;
+			uint16_t *old_attr = attr;
 			int *old_line = line;
 			buff = (char *)realloc(buff, buff_size*2);
-			attr = (char *)realloc(attr, buff_size*2);
+			attr = (uint16_t *)realloc(attr, buff_size*2*sizeof(*attr));
 			line = (int  *)realloc(line, (line_size*2)*sizeof(int));
 			if ( buff!=NULL && attr!=NULL && line!=NULL ) {
 				memset(line+line_size, 0, line_size*sizeof(int));
 				memset(buff+buff_size, 0, buff_size);
-				memset(attr+buff_size, 0, buff_size);
+				std::fill(attr+buff_size, attr+buff_size*2, 0);
 				buff_size*=2;
 				line_size*=2;
 			}
@@ -504,8 +506,8 @@ void Fl_Term::next_line()
 			cursor_y-=32768;
 			cursor_x-=middle;
 			recv0-=middle; if ( recv0<0 ) recv0=0;
-			memmove(attr, attr+middle, line[cursor_y+1]);
-			memset(attr+line[cursor_y+1], 0, 65536*64-line[cursor_y+1]);
+			memmove(attr, attr+middle, line[cursor_y+1]*sizeof(*attr));
+			std::fill(attr+line[cursor_y+1], attr+buff_size, 0);
 			memmove(buff, buff+middle, line[cursor_y+1]);
 			memset(buff+line[cursor_y+1], 0, 65536*64-line[cursor_y+1]);
 		}
@@ -537,7 +539,7 @@ void Fl_Term::append( const char *newtext, int len )
 			case 0x00:
 			case 0x0e:
 			case 0x0f:	break;
-			case 0x07:	fl_beep(FL_BEEP_DEFAULT); break;
+			case 0x07: if (!software_) fl_beep(FL_BEEP_DEFAULT); break;
 			case 0x08:
 				if ( cursor_x>line[cursor_y] ) {
 					if ( (buff[cursor_x--]&0xc0)==0x80 )//utf8 continuation byte
@@ -580,7 +582,7 @@ void Fl_Term::append( const char *newtext, int len )
 				p = telnet_options(p-1, zz-p+1);
 				break;
 		case 0xe2:
-			if ( bAltScreen ) {//utf8 box drawing hack
+			if ( bAltScreen && !software_ ) {//legacy UTF-8 box drawing hack
 				c = ' ';
 				if ( *p++==0x94 ) {
 					switch ( *p ) {
@@ -640,7 +642,7 @@ void Fl_Term::append( const char *newtext, int len )
 void Fl_Term::buff_clear(int offset, int len)
 {
 	memset(buff+offset, ' ', len);
-	memset(attr+offset,   7, len);
+	std::fill(attr+offset, attr+offset+len, 7);
 }
 /*[2J, mostly used after [?1049h to clear screen
   and when screen size changed during vi or raspi-config
@@ -826,7 +828,7 @@ const unsigned char *Fl_Term::vt100_Escape(const unsigned char *sz, int cnt)
 					else
 						for ( int i=screen_y+roll_bot; i>=cursor_y+n0; i-- ) {
 							memcpy( buff+line[i], buff+line[i-n0], size_x );
-							memcpy( attr+line[i], attr+line[i-n0], size_x );
+							memcpy( attr+line[i], attr+line[i-n0], size_x*sizeof(*attr) );
 						}
 					cursor_x = line[cursor_y];
 					buff_clear(cursor_x, size_x*n0);
@@ -837,7 +839,7 @@ const unsigned char *Fl_Term::vt100_Escape(const unsigned char *sz, int cnt)
 					else
 						for ( int i=cursor_y; i<=screen_y+roll_bot-n0; i++ ) {
 							memcpy( buff+line[i], buff+line[i+n0], size_x);
-							memcpy( attr+line[i], attr+line[i+n0], size_x);
+							memcpy( attr+line[i], attr+line[i+n0], size_x*sizeof(*attr));
 						}
 					cursor_x = line[cursor_y];
 					buff_clear(line[screen_y+roll_bot-n0+1], size_x*n0);
@@ -876,7 +878,7 @@ const unsigned char *Fl_Term::vt100_Escape(const unsigned char *sz, int cnt)
 						memcpy( buff+line[screen_y+i],
 								buff+line[screen_y+i+n0], size_x);
 						memcpy( attr+line[screen_y+i],
-								attr+line[screen_y+i+n0], size_x);
+								attr+line[screen_y+i+n0], size_x*sizeof(*attr));
 					}
 					buff_clear(line[screen_y+roll_bot-n0+1], n0*size_x);
 					break;
@@ -885,7 +887,7 @@ const unsigned char *Fl_Term::vt100_Escape(const unsigned char *sz, int cnt)
 						memcpy( buff+line[screen_y+i],
 								buff+line[screen_y+i-n0], size_x);
 						memcpy( attr+line[screen_y+i],
-								attr+line[screen_y+i-n0], size_x);
+								attr+line[screen_y+i-n0], size_x*sizeof(*attr));
 					}
 					buff_clear(line[screen_y+roll_top], n0*size_x);
 					break;
@@ -939,24 +941,29 @@ const unsigned char *Fl_Term::vt100_Escape(const unsigned char *sz, int cnt)
 						char *p = ESC_code;
 						while ( p!=NULL ) {
 							m0 = atoi(++p);
+                            const int sgr = m0;
 							switch ( m0/10 ) {
 							case 0: if ( m0==0 ) c_attr = 7;	//normal
 									if ( m0==1 ) c_attr|=0x08;	//bright
-									if ( m0==7 ) c_attr =0x70;	//negative
+									if ( m0==7 ) c_attr =0x370;	//negative
 									break;
 							case 2: c_attr = 7; 				//normal
 									break;
 							case 3: if ( m0==39 ) m0 = 7;//default foreground
-									c_attr = (c_attr&0xf8)+m0%10;
+									c_attr = (c_attr&0xfff8)+m0%10;
 									break;
 							case 4: if ( m0==49 ) m0 = 0;//default background
-									c_attr = (c_attr&0x0f)+((m0%10)<<4);
+									c_attr = (c_attr&0xff0f)+((m0%10)<<4);
 									break;
-							case 9: c_attr = (c_attr&0xf0) + m0%10 + 8;
+							case 9: c_attr = (c_attr&0xfff0) + m0%10 + 8;
 									break;
-							case 10:c_attr = (c_attr&0x0f) + ((m0%10+8)<<4);
+							case 10:c_attr = (c_attr&0xff0f) + ((m0%10+8)<<4);
 									break;
 							}
+                            if ((sgr >= 40 && sgr <= 47) || (sgr >= 100 && sgr <= 107)) c_attr |= 0x100;
+                            if (sgr == 49) c_attr &= ~0x100;
+                            if ((sgr >= 30 && sgr <= 37) || (sgr >= 90 && sgr <= 97)) c_attr |= 0x200;
+                            if (sgr == 39) c_attr &= ~0x200;
 							p = strchr(p, ';');
 						}
 					}
@@ -1011,7 +1018,7 @@ const unsigned char *Fl_Term::vt100_Escape(const unsigned char *sz, int cnt)
 				memcpy(buff+line[screen_y+roll_top], 
 						buff+line[screen_y+roll_top+1], len);
 				memcpy(attr+line[screen_y+roll_top], 
-						attr+line[screen_y+roll_top+1], len);
+						attr+line[screen_y+roll_top+1], len*sizeof(*attr));
 				len = line[screen_y+roll_top+1]-line[screen_y+roll_top];
 				for ( int i=roll_top+1; i<=roll_bot; i++ )
 					line[screen_y+i] = line[screen_y+i+1]-len;
@@ -1029,7 +1036,7 @@ const unsigned char *Fl_Term::vt100_Escape(const unsigned char *sz, int cnt)
 			else {								//scroll
 				for ( int i=roll_bot; i>roll_top; i-- ) {
 					memcpy(buff+line[screen_y+i],buff+line[screen_y+i-1],size_x);
-					memcpy(attr+line[screen_y+i],attr+line[screen_y+i-1],size_x);
+					memcpy(attr+line[screen_y+i],attr+line[screen_y+i-1],size_x*sizeof(*attr));
 				}
 				buff_clear(line[screen_y+roll_top], size_x);
 			}

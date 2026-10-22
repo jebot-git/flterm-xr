@@ -1,0 +1,15 @@
+#!/usr/bin/python3
+"""Show the existing overlay, or start a windowless FLTerm XR instance."""
+import errno,os,socket,sys
+binary=os.path.join(os.path.dirname(os.path.realpath(__file__)),'flterm-xr')
+path=os.path.join(os.environ.get('XDG_RUNTIME_DIR',''),'flterm-xr/control.sock')
+try:
+    with socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM) as connection:
+        connection.connect(path)
+        connection.send(b'show')
+except OSError as error:
+    if error.errno==errno.ECONNREFUSED:
+        try:os.unlink(path)
+        except FileNotFoundError:pass
+    elif error.errno!=errno.ENOENT:raise
+    os.execv(binary,[binary,*sys.argv[1:]])
