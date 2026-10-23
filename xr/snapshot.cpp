@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "terminal-style.hpp"
 #include "Fl_Term.h"
 #include <FL/fl_utf8.h>
 #include <algorithm>
@@ -131,3 +132,50 @@ std::string Fl_Term::selectionText() {
 // network listener or an implicit host connection.
 bool show_editor(int, int, int, int) { return false; }
 HOST *host_new(const char *) { return new HOST(); }
+
+// Translate a click to shell editing keys; changing only the painted cursor
+// would leave the PTY's line editor at its old insertion point.
+bool Fl_Term::positionCursor(int column, int row) {
+  std::string keys;
+  {
+    std::lock_guard<std::mutex> lock(append_mtx);
+    if (view_top_ >= 0 || bAltScreen || bAppCursor || mouseTracking_ || !bCursor ||
+        column < 0 || column >= size_x || row < 0 || row >= size_y)
+      return false;
+    row += screen_y;
+    // Only the current logical line can be edited. Soft wraps have no LF;
+    // never send Up/Down, which would traverse shell history.
+    int first = cursor_y, last = cursor_y;
+    while (first > screen_y && line[first] > line[first - 1] &&
+           buff[line[first] - 1] != '\n' &&
+           !(attr[line[first] - 1] & terminal_style::padding)) --first;
+    while (last + 1 < screen_y + size_y && line[last + 1] > line[last] &&
+           buff[line[last + 1] - 1] != '\n' &&
+           !(attr[line[last + 1] - 1] & terminal_style::padding) &&
+           line[last + 2] > line[last + 1]) ++last;
+    if (row < first || row > last) return false;
+    int end = std::max(line[row], line[row + 1]);
+    while (end > line[row] && (attr[end - 1] & terminal_style::padding)) --end;
+    int target = line[row], col = 0;
+    while (target < end) {
+      int n = 1;
+      unsigned cp = fl_utf8decode(buff + target, buff + end, &n);
+      int width = std::max(0, wcwidth(cp));
+      if (cp < 32 || (width > 0 && col + width > column)) break;
+      target += std::clamp(n, 1, end - target);
+      col += width;
+    }
+    int distance = 0;
+    const int stop = std::max(target, cursor_x);
+    for (int i = std::min(target, cursor_x); i < stop;) {
+      int n = 1;
+      unsigned cp = fl_utf8decode(buff + i, buff + stop, &n);
+      if (wcwidth(cp) > 0) ++distance;
+      i += std::clamp(n, 1, stop - i);
+    }
+    for (int i = 0; i < distance; ++i)
+      keys += target < cursor_x ? "\033[D" : "\033[C";
+  }
+  if (!keys.empty()) write(keys.data(), keys.size());
+  return true;
+}

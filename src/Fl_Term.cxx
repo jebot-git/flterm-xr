@@ -213,6 +213,7 @@ void Fl_Term::clear()
     utf8_pending_.clear(); keyboard_modes_.reset();
     synchronized_snapshot_.reset();
 	bBracket = bAltScreen = bAppCursor = bOriginMode = false;
+    mouseTracking_ = 0;
 	bWraparound = true;
 	bCursor = true;
 	bPrompt = true;
@@ -984,6 +985,18 @@ const unsigned char *Fl_Term::vt100_Escape(const unsigned char *sz, int cnt)
 					}
 					break;
 				case 'h':
+                    if (ESC_code[1] == '?') {
+                        for (const char *p = ESC_code + 2; *p;) {
+                            int mode = atoi(p);
+                            unsigned bit = mode == 9 ? 1 : mode == 1000 ? 2 :
+                                           mode == 1001 ? 4 : mode == 1002 ? 8 :
+                                           mode == 1003 ? 16 : 0;
+                            mouseTracking_ |= bit;
+                            const char *next = strchr(p, ';');
+                            if (!next) break;
+                            p = next + 1;
+                        }
+                    }
 					if ( ESC_code[1]=='4' ) bInsert=true;
 					if ( ESC_code[1]=='?' ) {
 						switch( atoi(ESC_code+2) ) {
@@ -998,6 +1011,18 @@ const unsigned char *Fl_Term::vt100_Escape(const unsigned char *sz, int cnt)
 					}
 					break;
 				case 'l':
+                    if (ESC_code[1] == '?') {
+                        for (const char *p = ESC_code + 2; *p;) {
+                            int mode = atoi(p);
+                            unsigned bit = mode == 9 ? 1 : mode == 1000 ? 2 :
+                                           mode == 1001 ? 4 : mode == 1002 ? 8 :
+                                           mode == 1003 ? 16 : 0;
+                            mouseTracking_ &= ~bit;
+                            const char *next = strchr(p, ';');
+                            if (!next) break;
+                            p = next + 1;
+                        }
+                    }
 					if ( ESC_code[1]=='4' ) bInsert=false;
 					if ( ESC_code[1]=='?' ) {
 						switch( atoi(ESC_code+2) ) {

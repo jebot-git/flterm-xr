@@ -133,6 +133,19 @@ try:
         xtest.fake_input(xd,X.ButtonPress,2);xtest.fake_input(xd,X.ButtonRelease,2);xd.sync();time.sleep(.15);host_image().save(out/'primary-before-return.png');key('Return')
         check(wait(lambda:primary_pasted.exists() and primary_pasted.read_text()=='PRIMARY_日本語'),'Middle-click pastes external UTF-8 PRIMARY into the FLTerm PTY')
         check(selection(False)=='CLIPBOARD_SENTINEL','Middle-click paste keeps the Copy/Paste clipboard independent')
+        # A real desktop click must update readline, then insert into the command.
+        ctl(primary_socket,"type exec env PS1='> ' HISTFILE=/dev/null /bin/bash --noprofile --norc -i\r")
+        time.sleep(.4);chord(['Control_L'],'l');time.sleep(.2)
+        clicked=runtime/'cursor-clicked'
+        command="printf %s ac > "+str(clicked)
+        ctl(primary_socket,'type '+command);time.sleep(.3)
+        geometry=windows()[0]['desktop']
+        click_column=2+command.index('ac')+1
+        xtest.fake_input(xd,X.MotionNotify,x=int(geometry['x'])+click_column*8+1,y=int(geometry['y'])+34+8)
+        xd.sync();time.sleep(.1)
+        xtest.fake_input(xd,X.ButtonPress,1);xtest.fake_input(xd,X.ButtonRelease,1);xd.sync();time.sleep(.2)
+        type_text('b');key('Return')
+        check(wait(lambda:clicked.exists() and clicked.read_text()=='abc'),'Left click repositions the readline cursor for insertion without breaking drag selection')
         # Exercise real compositor wheel and keyboard input against a live PTY.
         scroll_ready=runtime/'scroll-ready'
         ctl(primary_socket,"type seq 1 200; printf ready > "+str(scroll_ready)+'\r')

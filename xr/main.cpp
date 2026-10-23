@@ -2,6 +2,7 @@
 #include "appearance.h"
 #include "background.hpp"
 #include "clipboard.hpp"
+#include "click.hpp"
 #include "control.hpp"
 #include "desktop-menu.h"
 #include "desktop-keyboard.hpp"
@@ -194,6 +195,8 @@ struct App {
   size_t active = 0;
   bool dirty = true, visible = true;
   bool selecting = false;
+  CursorClick cursorClick;
+  unsigned keyModifiers = 0;
   std::string menuService, menuPath;
   PanelLayout layout, initial;
   LayoutState state;
@@ -256,6 +259,33 @@ struct App {
     tabs.push_back(std::move(t));
     active = tabs.size() - 1;
     renderer.preedit.clear();
+    dirty = true;
+  }
+  void pointerBegin(int x, int y, bool plain = true) {
+    selecting = x >= 0 && y >= 0 && x < term().sizeX() * renderer.cw &&
+                y < term().sizeY() * renderer.ch;
+    cursorClick.cancel();
+    if (!selecting) return;
+    cursorClick.begin(identities[&term()], x, y, plain);
+    term().selectCells(x / renderer.cw, y / renderer.ch, true);
+    dirty = true;
+  }
+  void pointerMotion(int x, int y) {
+    if (!selecting || cursorClick.tab != identities[&term()]) return;
+    cursorClick.motion(x, y);
+    cursorClick.dragged |= x / renderer.cw != cursorClick.x / renderer.cw ||
+                           y / renderer.ch != cursorClick.y / renderer.ch;
+    term().selectCells(std::max(0, x) / renderer.cw,
+                       std::max(0, y) / renderer.ch, false);
+    dirty = true;
+  }
+  void pointerEnd(int x, int y) {
+    if (!selecting) return;
+    pointerMotion(x, y);
+    selecting = false;
+    if (cursorClick.finish(identities[&term()], x, y))
+      term().positionCursor(x < 0 ? -1 : x / renderer.cw,
+                            y < 0 ? -1 : y / renderer.ch);
     dirty = true;
   }
   void select(size_t index) {
@@ -330,6 +360,9 @@ struct App {
            const kitty_keyboard::Key *identity = nullptr) {
     auto sc = event.keysym.scancode;
     auto mod = event.keysym.mod;
+    keyModifiers = mod;
+    cursorClick.cancel();
+    selecting = false;
     bool down = event.type == SDL_KEYDOWN;
     if (sc >= 0 && sc < SDL_NUM_SCANCODES && !down && consumed[sc]) {
       consumed[sc] = false;
@@ -658,6 +691,8 @@ public:
       return 1;
     if (event == FL_UNFOCUS) {
       r.preedit.clear();
+      app.selecting = false;
+      app.cursorClick.cancel();
       app.dirty = true;
       return 1;
     }
@@ -673,9 +708,13 @@ public:
       if (event == FL_DRAG ? (Fl::event_state() & FL_BUTTON1)
                            : Fl::event_button() == FL_LEFT_MOUSE) {
         // A GL subwindow receives coordinates local to its own surface.
-        app.term().selectCells(Fl::event_x() / r.cw,
-                               Fl::event_y() / r.ch, event == FL_PUSH);
-        app.dirty = true;
+        if (event == FL_PUSH)
+          app.pointerBegin(Fl::event_x(), Fl::event_y(),
+                           !(Fl::event_state() & (FL_SHIFT | FL_CTRL | FL_ALT | FL_META)) &&
+                           Fl::event_clicks() == 0);
+        else if (event == FL_DRAG)
+          app.pointerMotion(Fl::event_x(), Fl::event_y());
+        else app.pointerEnd(Fl::event_x(), Fl::event_y());
       } else if (event == FL_RELEASE && Fl::event_button() == FL_MIDDLE_MOUSE) {
         if (app.options.wayland) {
           app.pasteTab = app.identities[&app.term()];
@@ -936,18 +975,16 @@ int main(int argc, char **argv) try {
           app.dirty = true;
         } else if (event.type == SDL_MOUSEBUTTONDOWN &&
                    event.button.button == SDL_BUTTON_LEFT) {
-          app.selecting = true;
-          app.term().selectCells(event.button.x / app.renderer.cw,
-                                 event.button.y / app.renderer.ch, true);
-          app.dirty = true;
+          app.pointerBegin(event.button.x, event.button.y,
+                           !(app.keyModifiers & (KMOD_SHIFT | KMOD_CTRL | KMOD_ALT | KMOD_GUI)) &&
+                           event.button.clicks < 2);
         } else if (event.type == SDL_MOUSEMOTION && app.selecting) {
-          app.term().selectCells(event.motion.x / app.renderer.cw,
-                                 event.motion.y / app.renderer.ch, false);
-          app.dirty = true;
+          app.pointerMotion(event.motion.x, event.motion.y);
         } else if (event.type == SDL_MOUSEBUTTONUP &&
                    event.button.button == SDL_BUTTON_LEFT) {
-          app.selecting = false;
-          app.clipboard.copy(app.term().selectionText(), true);
+          app.pointerEnd(event.button.x, event.button.y);
+          auto text = app.term().selectionText();
+          if (!text.empty()) app.clipboard.copy(text, true);
         } else if (event.type == SDL_MOUSEBUTTONDOWN &&
                    event.button.button == SDL_BUTTON_MIDDLE) {
           app.pasteTab = app.identities[&app.term()];

@@ -91,6 +91,7 @@ class Fl_Term : public Fl_Widget {
 	bool bInsert;		//insert mode, for inline editing for commands
 	bool bGraphic;		//graphic character mode, for text mode drawing
 	bool bCursor;		//display cursor or not
+	unsigned mouseTracking_ = 0;
 	bool bAppCursor;	//app cursor mode for vi
 	bool bAltScreen;	//alternative screen for vi
 	bool bBracket;		//bracketed paste mode
@@ -157,6 +158,7 @@ public:
     int scrollOffset() const { return screen_y - viewTop(); }
     void pasteText(const std::string &text);
     void selectCells(int column, int row, bool begin);
+    bool positionCursor(int column, int row);
     void selectAll();
     std::string selectionText();
     bool applicationCursor() const { return bAppCursor; }

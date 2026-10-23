@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "Fl_Term.h"
+#include "terminal-style.hpp"
 #include <FL/fl_utf8.h>
 #include <cstdlib>
 #include <cwchar>
@@ -87,7 +88,8 @@ void Fl_Term::materializeRows() {
     if (width < size_x) {
       // Padding must not move a cursor already positioned at end of text.
       int savedRow = cursor_y, savedColumn = cellColumn(cursor_y, cursor_x);
-      replaceRowBytes(row, end, end, std::string(size_x - width, ' '));
+      std::vector<uint64_t> padding(size_x - width, c_attr | terminal_style::padding);
+      replaceRowBytes(row, end, end, std::string(size_x - width, ' '), padding.data());
       cursor_x = cellOffset(savedRow, savedColumn);
     }
   }

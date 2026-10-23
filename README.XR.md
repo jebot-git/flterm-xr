@@ -33,6 +33,8 @@ creates a primary XR session. `--blend` selects a supported environment blend.
 The transparent background uses premultiplied alpha; explicitly coloured ANSI
 backgrounds remain opaque unless `--styled-background-opacity` changes them.
 Hiding submits zero layers while PTYs and scrollback remain alive.
+DomeD login prestarts the FLTerm overlay hidden, without grabbing keyboard or
+pointer focus. Use the existing XR terminal shortcut to show it when needed.
 
 ## DomeD integration
 
@@ -75,7 +77,13 @@ group; outside DomeD it retains Ghostty XR's environment/KDE configuration path.
 
 - **Ctrl+Shift+T/W**: create/close a tab; **Ctrl+PageUp/PageDown**: switch tabs.
 - **Ctrl+Shift+C/V/A**: copy, paste and select all. Ctrl+C remains shell input.
-- Desktop drag selects text; middle-click pastes primary selection; wheel scrolls.
+- Left-click positions the shell cursor on the current logical line (including
+  soft wraps); drag selects text; middle-click pastes primary selection; wheel scrolls.
+  Cursor positioning sends Left/Right editing keys and requires a shell line editor
+  such as Bash/readline. Clicks past the text clamp to its end. Scrollback, other
+  output lines, full-screen/application cursor modes and application mouse tracking
+  requests do not trigger editing keys. Modified clicks and drags retain selection
+  behavior. This applies to both the desktop window and the native XR overlay.
 - XR **Ctrl+Alt+arrows** moves the quad; add Shift to resize width/height.
 - XR **Ctrl+Alt+PageUp/PageDown** adjusts depth; **+/-** scales; **Home** resets.
 - XR **Ctrl+Alt+B** toggles the canvas between transparent and 30% opaque.
@@ -194,3 +202,8 @@ negotiation, all keyboard enhancement flags, layout alternatives, keypad and
 modifier events, and legacy fallback. The desktop integration test also verifies
 actual Kitty bytes through the compositor and PTY; use `--keyboard-only` for its
 focused keyboard checks.
+
+Prompt icons use bundled BDF fallbacks (Cozette and Scientifica) so their glyphs
+remain available when the desktop font collection changes. Their licenses and
+pinned source checksums are installed alongside the fonts in
+`share/flterm-xr/fonts`.

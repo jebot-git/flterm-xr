@@ -9,6 +9,8 @@ using Style = uint64_t;
 constexpr Style backgroundSet = 0x100, foregroundSet = 0x200;
 constexpr Style foregroundRGB = 0x400, backgroundRGB = 0x800, inverse = 0x1000;
 constexpr Style faint = 0x2000;
+// Grid padding has no corresponding character in the shell line editor.
+constexpr Style padding = 0x4000;
 constexpr Style foregroundMask = Style(0xffffff) << 16, backgroundMask = Style(0xffffff) << 40;
 inline constexpr std::array<std::array<uint8_t, 3>, 16> ansi{{
  {0,0,0},{192,0,0},{0,192,0},{192,192,0},{32,96,192},{192,0,192},{0,192,192},{192,192,192},

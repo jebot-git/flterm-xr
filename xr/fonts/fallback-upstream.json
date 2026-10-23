@@ -1,0 +1,16 @@
+{
+  "purpose": "App-private bitmap fallbacks retain prompt icon coverage independently of the desktop font collection. Original BDF pixels are unchanged.",
+  "fonts": {
+    "cozette-13.bdf": {
+      "repository": "https://github.com/slavfox/Cozette",
+      "revision": "4808ce9d5a30c19437730efdc7862db03792a591",
+      "sha256": "2d5ed63c7bb6354b37935a9a6fde1d7da97e733604eec0e290c387d65e3c02d2"
+    },
+    "scientifica-11.bdf": {
+      "repository": "https://github.com/Tecate/bitmap-fonts",
+      "revision": "5c101c91bf2ed0039aad02f9bf76ddb2018b1f21",
+      "sha256": "89410346c61fb426f1e2e751bad2b47c43b3d090a610e5be1941c73342888293"
+    }
+  },
+  "scientifica_license_url": "https://raw.githubusercontent.com/nerdypepper/scientifica/master/LICENSE"
+}

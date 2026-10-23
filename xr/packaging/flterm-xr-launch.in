@@ -6,7 +6,7 @@ path=os.path.join(os.environ.get('XDG_RUNTIME_DIR',''),'flterm-xr/control.sock')
 try:
     with socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM) as connection:
         connection.connect(path)
-        connection.send(b'show')
+        connection.send(b'hide' if '--hidden' in sys.argv[1:] else b'show')
 except OSError as error:
     if error.errno==errno.ECONNREFUSED:
         try:os.unlink(path)
