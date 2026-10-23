@@ -130,9 +130,25 @@ passed under AddressSanitizer and UndefinedBehaviorSanitizer (framework leak
 reporting disabled). DomeD passed six terminal unit tests and both separate
 backend/overlay integration tests.
 
-This is an initial working port. Terminal emulation is FLTerm's older VT100 core:
-it does not acquire Ghostty's truecolour, Kitty keyboard/graphics, grapheme or
-modern terminal protocol coverage. Desktop FLTK composition and clipboard use
+Terminal emulation retains FLTerm's core, with indexed/RGB colors, UTF-8 cell
+editing and cursor addressing, synchronized updates, cursor-position reports and
+foreground/background color queries. Unicode redraws replace complete cells and
+preserve adjacent rows, including in Codex's alternate screen.
+
+The [Kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/)
+supports all five progressive enhancements: disambiguated escape codes,
+press/repeat/release events, alternate key identities, reporting all keys, and
+associated Unicode text. Each tab maintains independent main/alternate-screen
+mode stacks (bounded to 32 entries), with query, push/pop and replace/set/clear
+commands. Native Wayland and XR input retain XKB layout identities, physical US
+base keys, keypad keys and modifier/lock state. Wayland observes the compositor's
+keymap while FLTK owns composition; XR uses its existing native input path.
+Shell input retains legacy encodings until applications enable enhancements.
+Terminal shortcuts listed above remain reserved by the frontend. The diagnostic
+X11 preview uses the key information available from FLTK.
+
+Kitty graphics and full grapheme-cluster handling remain unsupported.
+Desktop FLTK composition and clipboard use
 the native seat; advanced IME conversion needs further interactive verification.
 Native overlay IME and live keyboard-group changes during an input grab are not
 yet synchronized. Core input/layout tests and a simulated XR runtime do not replace
@@ -171,3 +187,10 @@ The `scrollback` CTest covers bounds, output anchoring, selection, UTF-8/styles,
 resize, alternate screens, scroll regions and scrollbar-free rendering. The
 private DomeD integration test also checks actual wheel and scrollback shortcut
 input; control-socket status includes `history_rows` and `scroll_offset`.
+
+The `terminal-protocol` and `key-encoding` CTests cover fragmented Codex-style
+Unicode redraws, erasing/scrolling without corrupting neighboring rows, protocol
+negotiation, all keyboard enhancement flags, layout alternatives, keypad and
+modifier events, and legacy fallback. The desktop integration test also verifies
+actual Kitty bytes through the compositor and PTY; use `--keyboard-only` for its
+focused keyboard checks.

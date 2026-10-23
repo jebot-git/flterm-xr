@@ -32,7 +32,18 @@ static SDL_Scancode scancode(unsigned code) {
         KEYMAP(MINUS,MINUS); KEYMAP(EQUAL,EQUALS); KEYMAP(LEFTBRACE,LEFTBRACKET); KEYMAP(RIGHTBRACE,RIGHTBRACKET);
         KEYMAP(BACKSLASH,BACKSLASH); KEYMAP(SEMICOLON,SEMICOLON); KEYMAP(APOSTROPHE,APOSTROPHE);
         KEYMAP(GRAVE,GRAVE); KEYMAP(COMMA,COMMA); KEYMAP(DOT,PERIOD); KEYMAP(SLASH,SLASH);
-        KEYMAP(KPPLUS,KP_PLUS); KEYMAP(KPMINUS,KP_MINUS); KEYMAP(KPENTER,RETURN);
+        KEYMAP(KPPLUS,KP_PLUS); KEYMAP(KPMINUS,KP_MINUS); KEYMAP(KPENTER,KP_ENTER);
+        KEYMAP(KP0,KP_0);KEYMAP(KP1,KP_1);KEYMAP(KP2,KP_2);KEYMAP(KP3,KP_3);KEYMAP(KP4,KP_4);
+        KEYMAP(KP5,KP_5);KEYMAP(KP6,KP_6);KEYMAP(KP7,KP_7);KEYMAP(KP8,KP_8);KEYMAP(KP9,KP_9);
+        KEYMAP(KPDOT,KP_PERIOD);KEYMAP(KPSLASH,KP_DIVIDE);KEYMAP(KPASTERISK,KP_MULTIPLY);
+        KEYMAP(KPEQUAL,KP_EQUALS);KEYMAP(KPCOMMA,KP_COMMA);
+        KEYMAP(CAPSLOCK,CAPSLOCK);KEYMAP(NUMLOCK,NUMLOCKCLEAR);KEYMAP(SCROLLLOCK,SCROLLLOCK);
+        KEYMAP(SYSRQ,PRINTSCREEN);KEYMAP(PAUSE,PAUSE);KEYMAP(COMPOSE,APPLICATION);
+        KEYMAP(F13,F13);KEYMAP(F14,F14);KEYMAP(F15,F15);KEYMAP(F16,F16);KEYMAP(F17,F17);KEYMAP(F18,F18);
+        KEYMAP(F19,F19);KEYMAP(F20,F20);KEYMAP(F21,F21);KEYMAP(F22,F22);KEYMAP(F23,F23);KEYMAP(F24,F24);
+        KEYMAP(PLAYPAUSE,AUDIOPLAY);KEYMAP(STOPCD,AUDIOSTOP);KEYMAP(NEXTSONG,AUDIONEXT);
+        KEYMAP(PREVIOUSSONG,AUDIOPREV);KEYMAP(VOLUMEDOWN,VOLUMEDOWN);KEYMAP(VOLUMEUP,VOLUMEUP);KEYMAP(MUTE,AUDIOMUTE);
+        KEYMAP(REWIND,AUDIOREWIND);KEYMAP(FASTFORWARD,AUDIOFASTFORWARD);
 #undef KEYMAP
         default: return SDL_SCANCODE_UNKNOWN;
     }
@@ -50,11 +61,23 @@ KeyboardTranslator::~KeyboardTranslator() {
 std::vector<SDL_Event> KeyboardTranslator::key(unsigned code, int value) {
     std::vector<SDL_Event> events;
     auto keycode = code+8;
+    auto sym = xkb_state_key_get_one_sym(state_,keycode);
+    unsigned physicalModifier=0;
+    switch(sym) {
+    case XKB_KEY_Alt_L:case XKB_KEY_Alt_R:physicalModifier=kitty_keyboard::Alt;break;
+    case XKB_KEY_Super_L:case XKB_KEY_Super_R:physicalModifier=kitty_keyboard::Super;break;
+    case XKB_KEY_Hyper_L:case XKB_KEY_Hyper_R:physicalModifier=kitty_keyboard::Hyper;break;
+    case XKB_KEY_Meta_L:case XKB_KEY_Meta_R:physicalModifier=kitty_keyboard::Meta;break;
+    default:break;
+    }
+    if(!value)physical_modifiers_.erase(code);
+    else if(value==1 && physicalModifier)physical_modifiers_[code]={physicalModifier,sym};
     if (value != 2) xkb_state_update_key(state_, keycode, value ? XKB_KEY_DOWN : XKB_KEY_UP);
     auto mod = [&](const char* name) { return xkb_state_mod_name_is_active(state_, name, XKB_STATE_MODS_EFFECTIVE) > 0; };
     SDL_Keymod mods = SDL_Keymod((mod(XKB_MOD_NAME_SHIFT) ? KMOD_SHIFT : 0) |
         (mod(XKB_MOD_NAME_CTRL) ? KMOD_CTRL : 0) | (mod(XKB_MOD_NAME_ALT) ? KMOD_ALT : 0) |
-        (mod(XKB_MOD_NAME_LOGO) ? KMOD_GUI : 0));
+        (mod(XKB_MOD_NAME_LOGO) ? KMOD_GUI : 0) | (mod(XKB_MOD_NAME_CAPS)?KMOD_CAPS:0) |
+        (mod(XKB_MOD_NAME_NUM)?KMOD_NUM:0));
     SDL_Event event{};
     event.type = value ? SDL_KEYDOWN : SDL_KEYUP;
     event.key.repeat = value == 2;
@@ -63,7 +86,6 @@ std::vector<SDL_Event> KeyboardTranslator::key(unsigned code, int value) {
     events.push_back(event);
     if (!value || (mods & (KMOD_CTRL | KMOD_ALT | KMOD_GUI))) return events;
     char text[32]{};
-    auto sym = xkb_state_key_get_one_sym(state_, keycode);
     if (compose_) {
         xkb_compose_state_feed(compose_, sym);
         auto status = xkb_compose_state_get_status(compose_);
@@ -81,6 +103,96 @@ std::vector<SDL_Event> KeyboardTranslator::key(unsigned code, int value) {
         events.push_back(input);
     }
     return events;
+}
+void KeyboardTranslator::modifiers(unsigned depressed,unsigned latched,unsigned locked,unsigned group) {
+    xkb_state_update_mask(state_,depressed,latched,locked,0,0,group);
+}
+unsigned KeyboardTranslator::symbol(unsigned code) const {
+    return xkb_state_key_get_one_sym(state_,code+8);
+}
+KeyInput KeyboardTranslator::translate(unsigned code,int value) {
+    auto sym = symbol(code);
+    if(value!=1)if(auto held=physical_modifiers_.find(code);held!=physical_modifiers_.end())sym=held->second.second;
+    auto events=key(code,value);
+    KeyInput input;input.event=events.front().key;input.physical=code;
+    input.identity=inputKey(input.event,events.size()>1?events[1].text.text:"");
+    auto &identity=input.identity;
+    if(value && identity.text.empty() && (input.event.keysym.mod&KMOD_ALT) &&
+       !(input.event.keysym.mod&(KMOD_CTRL|KMOD_GUI))) {
+        auto cp=xkb_keysym_to_utf32(sym);
+        if(cp>=32 && !(cp>=127&&cp<=159))identity.text=kitty_keyboard::utf8(cp);
+    }
+    auto keymap=xkb_state_get_keymap(state_);
+    auto unicode=xkb_keysym_to_utf32(sym);
+    if(!identity.code && unicode>=32) {identity.code=unicode;identity.functional=false;}
+    if(!identity.functional) {
+        // Remove Shift/Caps without removing AltGr or other layout selectors.
+        // Level zero alone is incorrect for keys such as Czech AltGr+E (Euro).
+        auto shadow=xkb_state_new(keymap);
+        if(shadow) {
+            auto mask=[&](const char *name) {
+                auto index=xkb_keymap_mod_get_index(keymap,name);
+                return index<32?xkb_mod_mask_t(1)<<index:xkb_mod_mask_t(0);
+            };
+            auto shift=mask(XKB_MOD_NAME_SHIFT),clear=shift|mask(XKB_MOD_NAME_CAPS);
+            auto depressed=xkb_state_serialize_mods(state_,XKB_STATE_MODS_DEPRESSED)&~clear;
+            auto latched=xkb_state_serialize_mods(state_,XKB_STATE_MODS_LATCHED)&~clear;
+            auto locked=xkb_state_serialize_mods(state_,XKB_STATE_MODS_LOCKED)&~clear;
+            auto group=xkb_state_serialize_layout(state_,XKB_STATE_LAYOUT_EFFECTIVE);
+            xkb_state_update_mask(shadow,depressed,latched,locked,0,0,group);
+            identity.code=xkb_keysym_to_utf32(xkb_state_key_get_one_sym(shadow,code+8));
+            xkb_state_update_mask(shadow,depressed|shift,latched,locked,0,0,group);
+            identity.shifted=xkb_keysym_to_utf32(xkb_state_key_get_one_sym(shadow,code+8));
+            xkb_state_unref(shadow);
+        }
+    }
+    // Virtual XKB Alt/Meta (or Super/Hyper) can alias the same real modifier.
+    // Use actual modifier key identities rather than reporting both aliases.
+    unsigned named=0;
+    for(auto [_,modifier]:physical_modifiers_)named|=modifier.first;
+    using namespace kitty_keyboard;
+    if(named)identity.modifiers=(identity.modifiers&~(Alt|Super|Hyper|Meta))|named;
+    switch(sym) {
+    case XKB_KEY_Shift_L:identity.code=57441;identity.modifier=true;identity.functional=true;break;
+    case XKB_KEY_Shift_R:identity.code=57447;identity.modifier=true;identity.functional=true;break;
+    case XKB_KEY_Control_L:identity.code=57442;identity.modifier=true;identity.functional=true;break;
+    case XKB_KEY_Control_R:identity.code=57448;identity.modifier=true;identity.functional=true;break;
+    case XKB_KEY_Alt_L:identity.code=57443;identity.modifier=true;identity.functional=true;break;
+    case XKB_KEY_Alt_R:identity.code=57449;identity.modifier=true;identity.functional=true;break;
+    case XKB_KEY_Super_L:identity.code=57444;identity.modifier=true;identity.functional=true;break;
+    case XKB_KEY_Super_R:identity.code=57450;identity.modifier=true;identity.functional=true;break;
+    case XKB_KEY_XF86AudioRecord:identity.code=57437;identity.functional=true;break;
+    case XKB_KEY_XF86AudioPause:identity.code=57429;identity.functional=true;break;
+    case XKB_KEY_Hyper_L:identity.code=57445;identity.modifier=true;identity.functional=true;break;
+    case XKB_KEY_Hyper_R:identity.code=57451;identity.modifier=true;identity.functional=true;break;
+    case XKB_KEY_Meta_L:identity.code=57446;identity.modifier=true;identity.functional=true;break;
+    case XKB_KEY_Meta_R:identity.code=57452;identity.modifier=true;identity.functional=true;break;
+    case XKB_KEY_ISO_Level3_Shift:identity.code=57453;identity.modifier=true;identity.functional=true;break;
+    case XKB_KEY_ISO_Level5_Shift:identity.code=57454;identity.modifier=true;identity.functional=true;break;
+    default:break;
+    }
+    if(sym>=XKB_KEY_F25 && sym<=XKB_KEY_F35) {identity.code=57388+sym-XKB_KEY_F25;identity.functional=true;}
+    // Dedicated keypad identities follow NumLock's navigation mapping.
+    if(identity.code>=57399&&identity.code<=57409) {
+        static const std::pair<xkb_keysym_t,unsigned> navigation[]={
+            {XKB_KEY_KP_Left,57417},{XKB_KEY_KP_Right,57418},{XKB_KEY_KP_Up,57419},{XKB_KEY_KP_Down,57420},
+            {XKB_KEY_KP_Page_Up,57421},{XKB_KEY_KP_Page_Down,57422},{XKB_KEY_KP_Home,57423},{XKB_KEY_KP_End,57424},
+            {XKB_KEY_KP_Insert,57425},{XKB_KEY_KP_Delete,57426},{XKB_KEY_KP_Begin,57427}};
+        for(auto [symbol,key]:navigation)if(sym==symbol){identity.code=key;break;}
+    }
+    identity.composing=compose_ && xkb_compose_state_get_status(compose_)==XKB_COMPOSE_COMPOSING;
+    input.logical=sym;
+    if(sym>='A'&&sym<='Z')input.logical=sym+32;
+    if(code>=2&&code<=10)input.logical='1'+code-2;
+    else if(code==11)input.logical='0';
+    else if(sym==XKB_KEY_ISO_Left_Tab)input.logical=XKB_KEY_Tab;
+    else if(sym==XKB_KEY_Super_L)input.logical=0xffe7; // FL_Meta_L
+    else if(sym==XKB_KEY_Super_R)input.logical=0xffe8;
+    if(input.event.keysym.scancode>=SDL_SCANCODE_KP_1 && input.event.keysym.scancode<=SDL_SCANCODE_KP_9)
+        input.logical=XKB_KEY_KP_1+input.event.keysym.scancode-SDL_SCANCODE_KP_1;
+    else if(input.event.keysym.scancode==SDL_SCANCODE_KP_0)input.logical=XKB_KEY_KP_0;
+    else if(input.event.keysym.scancode==SDL_SCANCODE_KP_PERIOD && !(input.event.keysym.mod&KMOD_NUM))input.logical=XKB_KEY_KP_Separator;
+    return input;
 }
 NativeKeyboard::Device::~Device() {
     if (fd >= 0) { if (grabbed) ioctl(fd, EVIOCGRAB, 0); close(fd); }
@@ -163,8 +275,8 @@ void NativeKeyboard::scan() {
         warned_ = true;
     }
 }
-std::vector<SDL_Event> NativeKeyboard::pump() {
-    std::vector<SDL_Event> events;
+std::vector<KeyInput> NativeKeyboard::pump() {
+    std::vector<KeyInput> events;
     if (!desired_) return events;
     if (std::chrono::steady_clock::now()-scanned_ > std::chrono::seconds(1)) scan();
     for (auto& device : devices_) {
@@ -177,8 +289,7 @@ std::vector<SDL_Event> NativeKeyboard::pump() {
             for (size_t i = 0; i < size_t(bytes)/sizeof(input_event); ++i) {
                 auto& e = input[i];
                 if (e.type == EV_KEY && e.value >= 0 && e.value <= 2) {
-                    auto translated = device->translator->key(e.code, e.value);
-                    events.insert(events.end(), translated.begin(), translated.end());
+                    events.push_back(device->translator->translate(e.code,e.value));
                 }
             }
         }

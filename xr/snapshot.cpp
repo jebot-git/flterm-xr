@@ -36,6 +36,12 @@ void Fl_Term::grid(int cols, int rows) {
 }
 Fl_Term::Snapshot Fl_Term::snapshot() {
   std::lock_guard<std::mutex> lock(append_mtx);
+  if (synchronized_snapshot_ && std::chrono::steady_clock::now()<synchronized_until_)
+    return *synchronized_snapshot_;
+  synchronized_snapshot_.reset();
+  return liveSnapshot();
+}
+Fl_Term::Snapshot Fl_Term::liveSnapshot() {
   const int top = viewTop();
   Snapshot result{{},
                   columns(buff + line[cursor_y], cursor_x - line[cursor_y]),

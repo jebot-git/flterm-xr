@@ -4,6 +4,7 @@
 #include "clipboard.hpp"
 #include "control.hpp"
 #include "desktop-menu.h"
+#include "desktop-keyboard.hpp"
 #include "keyboard.hpp"
 #include "layout-state.hpp"
 #include "pointer.hpp"
@@ -202,6 +203,9 @@ struct App {
   std::unique_ptr<NativeGraphics> graphics;
   std::unique_ptr<XrOverlay> xr;
   std::unique_ptr<NativeKeyboard> keyboard;
+  std::unique_ptr<DesktopKeyboard> desktopKeyboard;
+  struct DesktopKey { unsigned symbol; SDL_KeyboardEvent event; std::string text; };
+  std::vector<DesktopKey> desktopKeys;
   std::unique_ptr<NativePointer> pointer;
   Clipboard clipboard{false};
   uint64_t pasteTab = 0, nextTab = 1;
@@ -322,7 +326,8 @@ struct App {
       dirty = false;
     }
   }
-  bool key(const SDL_KeyboardEvent &event, const std::string &text = {}) {
+  bool key(const SDL_KeyboardEvent &event, const std::string &text = {},
+           const kitty_keyboard::Key *identity = nullptr) {
     auto sc = event.keysym.scancode;
     auto mod = event.keysym.mod;
     bool down = event.type == SDL_KEYDOWN;
@@ -398,83 +403,15 @@ struct App {
         return consume();
       }
     }
-    if (!down || tabs.empty())
+    if (tabs.empty())
       return true;
-    if (!renderer.preedit.empty() && sc == SDL_SCANCODE_ESCAPE) {
+    if (down && !renderer.preedit.empty() && sc == SDL_SCANCODE_ESCAPE) {
       renderer.preedit.clear();
       dirty = true;
       return true;
     }
-    std::string bytes;
-    int modifier = 1 + !!(mod & KMOD_SHIFT) + 2 * !!(mod & KMOD_ALT) +
-                   4 * !!(mod & KMOD_CTRL);
-    auto csi = [&](char final) {
-      return modifier == 1
-                 ? std::string(term().applicationCursor() ? "\033O" : "\033[") +
-                       final
-                 : "\033[1;" + std::to_string(modifier) + final;
-    };
-    switch (sc) {
-    case SDL_SCANCODE_RETURN:
-      bytes = "\r";
-      break;
-    case SDL_SCANCODE_BACKSPACE:
-      bytes = "\177";
-      break;
-    case SDL_SCANCODE_TAB:
-      bytes = shift ? "\033[Z" : "\t";
-      break;
-    case SDL_SCANCODE_ESCAPE:
-      bytes = "\033";
-      break;
-    case SDL_SCANCODE_UP:
-      bytes = csi('A');
-      break;
-    case SDL_SCANCODE_DOWN:
-      bytes = csi('B');
-      break;
-    case SDL_SCANCODE_RIGHT:
-      bytes = csi('C');
-      break;
-    case SDL_SCANCODE_LEFT:
-      bytes = csi('D');
-      break;
-    case SDL_SCANCODE_HOME:
-      bytes = csi('H');
-      break;
-    case SDL_SCANCODE_END:
-      bytes = csi('F');
-      break;
-    default: {
-      int code = sc == SDL_SCANCODE_INSERT     ? 2
-                 : sc == SDL_SCANCODE_DELETE   ? 3
-                 : sc == SDL_SCANCODE_PAGEUP   ? 5
-                 : sc == SDL_SCANCODE_PAGEDOWN ? 6
-                                               : 0;
-      if (sc >= SDL_SCANCODE_F5 && sc <= SDL_SCANCODE_F12) {
-        static int codes[] = {15, 17, 18, 19, 20, 21, 23, 24};
-        code = codes[sc - SDL_SCANCODE_F5];
-      }
-      if (code)
-        bytes = "\033[" + std::to_string(code) +
-                (modifier == 1 ? "" : ";" + std::to_string(modifier)) + "~";
-      else if (sc >= SDL_SCANCODE_F1 && sc <= SDL_SCANCODE_F4)
-        bytes = modifier == 1
-                    ? std::string("\033O") + char('P' + sc - SDL_SCANCODE_F1)
-                    : "\033[1;" + std::to_string(modifier) +
-                          char('P' + sc - SDL_SCANCODE_F1);
-      else if (ctrl && sc >= SDL_SCANCODE_A && sc <= SDL_SCANCODE_Z)
-        bytes = char(1 + sc - SDL_SCANCODE_A);
-      else if (ctrl && sc == SDL_SCANCODE_SPACE)
-        bytes = std::string(1, '\0');
-      else if (!text.empty())
-        bytes = text;
-      else if (alt && sc >= SDL_SCANCODE_A && sc <= SDL_SCANCODE_Z)
-        bytes = char((shift ? 'A' : 'a') + sc - SDL_SCANCODE_A);
-      if (alt && !bytes.empty() && bytes[0] != '\033')
-        bytes = "\033" + bytes;
-    }
-    }
+    auto translated = identity ? *identity : inputKey(event,text);
+    auto bytes = kitty_keyboard::encode(translated,term().keyboardFlags(),term().applicationCursor());
     if (!bytes.empty()) {
       term().scrollToBottom();
       term().write(bytes.data(), bytes.size());
@@ -610,14 +547,18 @@ static SDL_Scancode desktopScancode(int symbol) {
     symbol += 'a' - 'A';
   if (symbol >= 'a' && symbol <= 'z')
     return SDL_Scancode(SDL_SCANCODE_A + symbol - 'a');
-  if (symbol > FL_F && symbol <= FL_F + 12)
+  if (symbol >= '1' && symbol <= '9') return SDL_Scancode(SDL_SCANCODE_1+symbol-'1');
+  if (symbol == '0') return SDL_SCANCODE_0;
+  if (symbol >= FL_KP+'0' && symbol <= FL_KP+'9')
+    return symbol==FL_KP+'0'?SDL_SCANCODE_KP_0:SDL_Scancode(SDL_SCANCODE_KP_1+symbol-FL_KP-'1');
+  if (symbol > FL_F && symbol <= FL_F + 24)
     return SDL_Scancode(SDL_SCANCODE_F1 + symbol - FL_F - 1);
   switch (symbol) {
 #define KEY(a, b)                                                              \
   case FL_##a:                                                                 \
     return SDL_SCANCODE_##b
     KEY(Enter, RETURN);
-    KEY(KP_Enter, RETURN);
+    KEY(KP_Enter, KP_ENTER);
     KEY(BackSpace, BACKSPACE);
     KEY(Tab, TAB);
     KEY(Escape, ESCAPE);
@@ -631,9 +572,17 @@ static SDL_Scancode desktopScancode(int symbol) {
     KEY(Page_Down, PAGEDOWN);
     KEY(Insert, INSERT);
     KEY(Delete, DELETE);
+    KEY(Shift_L, LSHIFT); KEY(Shift_R, RSHIFT); KEY(Control_L, LCTRL); KEY(Control_R, RCTRL);
+    KEY(Alt_L, LALT); KEY(Alt_R, RALT); KEY(Meta_L, LGUI); KEY(Meta_R, RGUI);
+    KEY(Caps_Lock, CAPSLOCK); KEY(Num_Lock, NUMLOCKCLEAR); KEY(Scroll_Lock, SCROLLLOCK);
+    KEY(Print, PRINTSCREEN); KEY(Pause, PAUSE); KEY(Menu, MENU);
 #undef KEY
-  case ' ':
-    return SDL_SCANCODE_SPACE;
+  case ' ': return SDL_SCANCODE_SPACE;
+  case '-':return SDL_SCANCODE_MINUS;case '=':return SDL_SCANCODE_EQUALS;
+  case '[':return SDL_SCANCODE_LEFTBRACKET;case ']':return SDL_SCANCODE_RIGHTBRACKET;
+  case '\\':return SDL_SCANCODE_BACKSLASH;case ';':return SDL_SCANCODE_SEMICOLON;
+  case '\'':return SDL_SCANCODE_APOSTROPHE;case '`':return SDL_SCANCODE_GRAVE;
+  case ',':return SDL_SCANCODE_COMMA;case '.':return SDL_SCANCODE_PERIOD;case '/':return SDL_SCANCODE_SLASH;
   default:
     return SDL_SCANCODE_UNKNOWN;
   }
@@ -750,12 +699,15 @@ public:
     if (event == FL_KEYDOWN || event == FL_KEYUP) {
       SDL_KeyboardEvent key{};
       key.type = event == FL_KEYDOWN ? SDL_KEYDOWN : SDL_KEYUP;
-      key.keysym.scancode = desktopScancode(Fl::event_key());
+      key.keysym.scancode = desktopScancode(Fl::event_original_key());
+      if (Fl::event_key() < 0xff00) key.keysym.sym = xkb_keysym_to_utf32(Fl::event_key());
       int state = Fl::event_state();
       key.keysym.mod = (state & FL_CTRL ? KMOD_CTRL : 0) |
                        (state & FL_SHIFT ? KMOD_SHIFT : 0) |
                        (state & FL_ALT ? KMOD_ALT : 0) |
-                       (state & FL_META ? KMOD_GUI : 0);
+                       (state & FL_META ? KMOD_GUI : 0) |
+                       (state & FL_CAPS_LOCK ? KMOD_CAPS : 0) |
+                       (state & FL_NUM_LOCK ? KMOD_NUM : 0);
       if (event == FL_KEYDOWN && (state & FL_CTRL) && (state & FL_SHIFT) &&
           Fl::event_key() == 'v') {
         Fl::paste(*this, 1);
@@ -772,7 +724,10 @@ public:
           r.preedit.clear();
         }
       }
-      app.key(key, std::string(Fl::event_text(), Fl::event_length()));
+      auto text=std::string(Fl::event_text(), Fl::event_length());
+      if (app.desktopKeyboard && app.desktopKeyboard->ready())
+        app.desktopKeys.push_back({unsigned(Fl::event_original_key()),key,std::move(text)});
+      else app.key(key,text);
       return 1;
     }
     return Fl_Gl_Window::handle(event);
@@ -929,6 +884,9 @@ int main(int argc, char **argv) try {
       throw std::runtime_error("This FLTK build has no Wayland backend");
 #endif
     window = std::make_unique<TerminalWindow>(app);
+#ifdef FLTK_USE_WAYLAND
+    if (fl_wl_display()) app.desktopKeyboard=std::make_unique<DesktopKeyboard>(fl_wl_display());
+#endif
   } else if (!options.headless) {
     app.graphics = std::make_unique<NativeGraphics>();
     app.xr = std::make_unique<XrOverlay>(
@@ -967,16 +925,8 @@ int main(int argc, char **argv) try {
     if (app.tabs.empty())
       break;
     if (app.keyboard) {
-      for (auto &event : app.keyboard->pump()) {
-        if (event.type == SDL_TEXTINPUT) {
-          if (app.visible) {
-            app.term().scrollToBottom();
-            app.term().write(event.text.text, strlen(event.text.text));
-            app.dirty = true;
-          }
-        } else if (event.type == SDL_KEYDOWN || event.type == SDL_KEYUP)
-          app.key(event.key);
-      }
+      for (auto &input : app.keyboard->pump())
+        if (app.visible) app.key(input.event,input.identity.text,&input.identity);
       app.keyboard->focus(app.visible && app.xr->running && !app.xr->quit);
     }
     if (app.pointer) {
@@ -1026,6 +976,13 @@ int main(int argc, char **argv) try {
     if (window) {
       window->poll();
       Fl::wait(.01);
+      // Both Wayland listeners have now dispatched this batch. Resolve FLTK's
+      // committed text against the compositor's physical key and actual layout.
+      for (auto &pending : app.desktopKeys) {
+        auto input=app.desktopKeyboard->resolve(pending.symbol,pending.event,pending.text);
+        app.key(input.event,input.identity.text,&input.identity);
+      }
+      app.desktopKeys.clear();
     } else if (!app.xr || !app.xr->running)
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }

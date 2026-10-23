@@ -23,6 +23,10 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <string_view>
+#include <optional>
+#include <chrono>
+#include "kitty-keyboard.hpp"
 
 #ifndef _FL_TERM_H_
 #define _FL_TERM_H_
@@ -57,6 +61,17 @@ class Fl_Term : public Fl_Widget {
     void trimHistory();
     void alternateBuffer(bool enable);
     void scrollScreenUp();
+    int cellColumn(int row, int offset) const;
+    int cellOffset(int row, int column) const;
+    void replaceCells(int row, int first, int last, std::string_view text);
+    void replaceRowBytes(int row, int first, int last, std::string_view text,
+                         const uint64_t *styles = nullptr);
+    void materializeRows();
+    void putGlyph(std::string_view text);
+    void scrollRegion(int top, int bottom, int amount);
+    bool softwareCsi(std::string_view sequence);
+    std::string utf8_pending_;
+    kitty_keyboard::Modes keyboard_modes_;
 	int roll_top;
 	int roll_bot;		//the range of lines that will scroll in alterscreen
 	int sel_left;
@@ -111,6 +126,7 @@ class Fl_Term : public Fl_Widget {
 	char *LogFileName;
 	FILE *fpLogFile;
 	HOST *host;
+    std::array<uint8_t,3> default_foreground_{231,235,241}, default_background_{22,28,35};
 
 protected:
 	void draw();
@@ -127,6 +143,11 @@ protected:
 public:
     struct Run { int row, column, columns; std::string text; uint64_t style; bool selected; };
     struct Snapshot { std::vector<Run> runs; int cursorColumn, cursorRow; bool cursor; };
+private:
+    std::optional<Snapshot> synchronized_snapshot_;
+    std::chrono::steady_clock::time_point synchronized_until_;
+    Snapshot liveSnapshot();
+public:
     Snapshot snapshot();
     void cellSize(int width, int height);
     void grid(int cols, int rows);
@@ -141,6 +162,10 @@ public:
     bool applicationCursor() const { return bAppCursor; }
     bool bracketedPaste() const { return bBracket; }
     bool alternateScreen() const { return bAltScreen; }
+    unsigned keyboardFlags() const { return keyboard_modes_.flags(bAltScreen); }
+    void defaultColors(std::array<uint8_t,3> foreground,std::array<uint8_t,3> background) {
+        default_foreground_=foreground;default_background_=background;
+    }
 	Fl_Term(int X,int Y,int W,int H,const char* L=0, bool software=false);
 	~Fl_Term();
 	void clear();

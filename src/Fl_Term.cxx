@@ -210,6 +210,8 @@ void Fl_Term::clear()
     memset(ESC_code, 0, sizeof(ESC_code));
 	bInsert = bEscape = bGraphic = false;
     control_string = 0; control_escape = false; control_payload.clear();
+    utf8_pending_.clear(); keyboard_modes_.reset();
+    synchronized_snapshot_.reset();
 	bBracket = bAltScreen = bAppCursor = bOriginMode = false;
 	bWraparound = true;
 	bCursor = true;
@@ -516,6 +518,7 @@ void Fl_Term::scrollScreenUp()
 {
     const int row = cursor_y - screen_y;
     const int column = cursor_x - line[cursor_y];
+    const int cell = software_ ? cellColumn(cursor_y,cursor_x) : 0;
     const int bottom = screen_y + size_y - 1;
     int tail = line[screen_y];
     for (int row = screen_y+1; row <= bottom+1; ++row) {
@@ -529,6 +532,7 @@ void Fl_Term::scrollScreenUp()
     line[cursor_y+1] = cursor_x + size_x;
     cursor_y = screen_y + row;
     cursor_x = line[cursor_y] + std::min(column, size_x-1);
+    if (software_) cursor_x = cellOffset(cursor_y,std::min(cell,size_x-1));
 }
 void Fl_Term::append( const char *newtext, int len )
 {
@@ -546,6 +550,14 @@ void Fl_Term::append( const char *newtext, int len )
             const bool terminated = (control_escape && c == '\\') ||
                                     (control_string == ']' && c == 0x07);
             if (cancelled || terminated) {
+                if (!cancelled && control_string==']' &&
+                    (control_payload=="10;?" || control_payload=="11;?")) {
+                    auto color=control_payload[1]=='0'?default_foreground_:default_background_;
+                    char reply[64];
+                    int length=snprintf(reply,sizeof(reply),"\033]%c%c;rgb:%04x/%04x/%04x\033\\",
+                        control_payload[0],control_payload[1],color[0]*257,color[1]*257,color[2]*257);
+                    write(reply,length);
+                }
                 if (!cancelled && control_string == ']' &&
                     (control_payload.starts_with("0;") || control_payload.starts_with("2;"))) {
                     auto title = control_payload.substr(2, sizeof(sTitle)-1);
@@ -563,12 +575,40 @@ void Fl_Term::append( const char *newtext, int len )
             }
             continue;
         }
+        if (software_ && c<32 && !utf8_pending_.empty()) {
+            putGlyph("\xef\xbf\xbd");utf8_pending_.clear();
+        }
+        if (software_ && c >= 32 && c != 0x7f && c != 0xff) {
+            // A terminal cell contains a complete codepoint, not one UTF-8 byte.
+            // Replacing bytes in place would overwrite the next cell/row.
+            if (!utf8_pending_.empty() && (c & 0xc0) != 0x80) {
+                putGlyph("\xef\xbf\xbd"); utf8_pending_.clear();
+            }
+            if (bGraphic && c >= 0x60 && c <= 0x7e) {
+                static constexpr std::string_view graphics[]={
+                    "◆","▒","␉","␌","␍","␊","°","±","␤","␋","┘","┐","┌","└","┼","⎺",
+                    "⎻","─","⎼","⎽","├","┤","┴","┬","│","≤","≥","π","≠","£","·"};
+                putGlyph(graphics[c-0x60]);
+            }
+            else if (c < 128) putGlyph(std::string_view(reinterpret_cast<const char *>(&c),1));
+            else {
+                utf8_pending_ += char(c);
+                int expected = fl_utf8len(static_cast<unsigned char>(utf8_pending_[0]));
+                if (expected <= 0) {putGlyph("\xef\xbf\xbd");utf8_pending_.clear();}
+                else if (int(utf8_pending_.size()) >= expected) {
+                    putGlyph(utf8_pending_); utf8_pending_.clear();
+                }
+            }
+            continue;
+        }
 		switch ( c ) {
 			case 0x00:
+			case 0x7f:
 			case 0x0e:
 			case 0x0f:	break;
 			case 0x07: if (!software_) fl_beep(FL_BEEP_DEFAULT); break;
 			case 0x08:
+				if (software_) {cursor_x=cellOffset(cursor_y,std::max(0,cellColumn(cursor_y,cursor_x)-1));break;}
 				if ( cursor_x>line[cursor_y] ) {
 					if ( (buff[cursor_x--]&0xc0)==0x80 )//utf8 continuation byte
 						while ( (buff[cursor_x]&0xc0)==0x80 )
@@ -576,6 +616,13 @@ void Fl_Term::append( const char *newtext, int len )
 				}
 				break;
 			case 0x09:{
+                if (software_) {
+                    materializeRows();
+                    int column=cellColumn(cursor_y,cursor_x);
+                    do {++column;} while(column<size_x-1 && !tabstops[column]);
+                    cursor_x=cellOffset(cursor_y,std::min(column,size_x-1));
+                    break;
+                }
 				int l;
 				do {
 					attr[cursor_x]=c_attr;
@@ -598,7 +645,7 @@ void Fl_Term::append( const char *newtext, int len )
 				}
 				break;
 			case 0x0d:
-				if ( cursor_x-line[cursor_y]==size_x+1 && *p!=0x0a )
+				if ( !software_ && cursor_x-line[cursor_y]==size_x+1 && (p==zz || *p!=0x0a) )
 					next_line();//soft line feed
 				else
 					cursor_x = line[cursor_y];
@@ -680,6 +727,7 @@ void Fl_Term::buff_clear(int offset, int len)
 */
 void Fl_Term::screen_clear(int m0)
 {
+    if (software_) {softwareCsi(std::to_string(m0)+"J");return;}
 	int lines = size_y;
 	if ( m0==2 ) screen_y = cursor_y;
 	if ( m0==1 ) {
@@ -750,6 +798,7 @@ const unsigned char *Fl_Term::vt100_Escape(const unsigned char *sz, int cnt)
 		case '[':
 			if ( ESC_idx > 1 && ESC_code[ESC_idx-1] >= 0x40 && ESC_code[ESC_idx-1] <= 0x7e ) {
 				bEscape = false;
+                if (software_ && softwareCsi(std::string_view(ESC_code+1,ESC_idx-1))) break;
 				int m0=0;	//used by [PsJ and [PsK
 				int n0=1;	//used by most, e.g. [PsA [PsB
 				int n1=1;	//n1;n0 used by [Ps;PtH [Ps;Ptr
@@ -984,14 +1033,16 @@ const unsigned char *Fl_Term::vt100_Escape(const unsigned char *sz, int cnt)
 			}
 			break;
 		case '7': //save cursor
-			save_x = cursor_x-line[cursor_y];
+			save_x = software_ ? cellColumn(cursor_y,cursor_x) : cursor_x-line[cursor_y];
 			save_y = cursor_y-screen_y;
 			save_attr = c_attr;
 			bEscape = false;
 			break;
 		case '8': //restore cursor
 			cursor_y = save_y+screen_y;
+			check_cursor_y();
 			cursor_x = line[cursor_y]+save_x;
+            if (software_) {materializeRows();cursor_x=cellOffset(cursor_y,std::min(save_x,size_x-1));}
 			c_attr = save_attr;
 			bEscape = false;
 			break;
@@ -1005,6 +1056,16 @@ const unsigned char *Fl_Term::vt100_Escape(const unsigned char *sz, int cnt)
 			bEscape = false;
 			break;
 		case 'D': //move/scroll up one line
+            if (software_) {
+                int column=cellColumn(cursor_y,cursor_x);
+                materializeRows();
+                if (cursor_y == screen_y+roll_bot) {
+                    if (!bAltScreen && roll_top==0 && roll_bot==size_y-1) scrollScreenUp();
+                    else scrollRegion(screen_y+roll_top,screen_y+roll_bot,1);
+                } else cursor_y=std::min(cursor_y+1,screen_y+size_y-1);
+                cursor_x=cellOffset(cursor_y,std::min(column,size_x-1));
+                bEscape=false;break;
+            }
 			if ( cursor_y<screen_y+roll_bot ) {	//move
 				int x = cursor_x-line[cursor_y];
 				cursor_x = line[++cursor_y]+x;
@@ -1029,6 +1090,14 @@ const unsigned char *Fl_Term::vt100_Escape(const unsigned char *sz, int cnt)
 			bEscape = false;
 			break;
 		case 'M': //move/scroll down one line
+            if (software_) {
+                int column=cellColumn(cursor_y,cursor_x);
+                materializeRows();
+                if (cursor_y==screen_y+roll_top) scrollRegion(screen_y+roll_top,screen_y+roll_bot,-1);
+                else cursor_y=std::max(screen_y,cursor_y-1);
+                cursor_x=cellOffset(cursor_y,std::min(column,size_x-1));
+                bEscape=false;break;
+            }
 			if ( cursor_y>screen_y+roll_top ) {	// move
 				int x = cursor_x-line[cursor_y];
 				cursor_x = line[--cursor_y]+x;

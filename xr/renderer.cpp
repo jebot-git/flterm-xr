@@ -154,6 +154,7 @@ void Renderer::glyph(unsigned cp, int x, int y, int cols,
     }
 }
 void Renderer::render(Fl_Term &term, int tab, int count) {
+  term.defaultColors(foreground(),background());
   width = term.sizeX() * cw;
   height = (term.sizeY() + 1) * ch;
   pixels.assign(size_t(width) * height * 4, 0);
@@ -167,6 +168,8 @@ void Renderer::render(Fl_Term &term, int tab, int count) {
               : run.style & terminal_style::backgroundSet ? ansi[(run.style >> 4) & 15] : background();
     bool explicitBackground = run.style & terminal_style::backgroundSet;
     if (run.style & terminal_style::inverse) { std::swap(fg,bg); explicitBackground=true; }
+    if (run.style & terminal_style::faint)
+      for(int c=0;c<3;++c)fg[c]=(unsigned(fg[c])+bg[c])/2;
     if (run.selected) {
       rect(run.column * cw, run.row * ch,
            width - run.column * cw < run.columns * cw ? width - run.column * cw

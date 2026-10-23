@@ -24,6 +24,9 @@ def wait(fn,timeout=60):
             if result:return result
         except (OSError,ValueError,KeyError,StopIteration):pass
         time.sleep(.05)
+    if xd:
+        try:host_image().save(out/'failure.png')
+        except Exception:pass
     raise AssertionError('Timed out; see '+str(out))
 def start(args,name,env,**kw):
     log=(out/(name+'.log')).open('w');logs.append(log)
@@ -100,58 +103,99 @@ try:
     typed=runtime/'typed';type_text('echo domed > '+str(typed));key('Return')
     check(wait(lambda:typed.exists() and typed.read_text().strip()=='domed'),'Real compositor keyboard events reach the FLTerm PTY')
     wayland=re.search(r'Dome Wayland socket: (\S+)',(out/'compositor.log').read_text())[1]
-    paste_env={**env,'WAYLAND_DISPLAY':wayland};pasted=runtime/'pasted'
-    subprocess.run(['wl-copy','--type','text/plain;charset=utf-8'],input=("printf '%s' 'Žluťoučký 日本語' > "+str(pasted)).encode(),env=paste_env,check=True,timeout=5)
-    chord(['Control_L','Shift_L'],'v');key('Return')
-    check(wait(lambda:pasted.exists() and pasted.read_text()=='Žluťoučký 日本語'),'FLTK Wayland clipboard paste preserves UTF-8')
-    # PRIMARY stays independent of the explicit Copy/Paste clipboard.
-    selected='PRIMARY_Žluťoučký'
     primary_socket=next((runtime/'flterm-xr').glob('wayland-*.sock'))
-    ctl(primary_socket,"type printf '\\033[2J\\033[H%s' '"+selected+"'\r")
-    time.sleep(.3)
-    subprocess.run(['wl-copy','--type','text/plain;charset=utf-8'],input=b'CLIPBOARD_SENTINEL',env=paste_env,check=True,timeout=5)
-    geometry=windows()[0]['desktop']
-    x=int(geometry['x']);y=int(geometry['y'])+34+8
-    xtest.fake_input(xd,X.MotionNotify,x=x+1,y=y);xd.sync();time.sleep(.1)
-    xtest.fake_input(xd,X.ButtonPress,1);xd.sync();time.sleep(.05)
-    xtest.fake_input(xd,X.MotionNotify,x=x+len(selected)*8+1,y=y);xd.sync();time.sleep(.1)
-    xtest.fake_input(xd,X.ButtonRelease,1);xd.sync()
-    def selection(primary):
-        result=subprocess.run(['wl-paste',*(['--primary'] if primary else []),'--no-newline'],env=paste_env,capture_output=True,timeout=2)
-        return result.stdout.decode() if result.returncode==0 else None
-    check(wait(lambda:selection(True)==selected,timeout=5),'Left-drag selection publishes UTF-8 to Wayland PRIMARY')
-    check(selection(False)=='CLIPBOARD_SENTINEL','Primary selection leaves the Copy/Paste clipboard unchanged')
-    primary_pasted=runtime/'primary-pasted'
-    command="printf '%s' 'PRIMARY_日本語' > "+str(primary_pasted)
-    subprocess.run(['wl-copy','--primary','--type','text/plain;charset=utf-8'],input=command.encode(),env=paste_env,check=True,timeout=5)
-    time.sleep(.1)
-    xtest.fake_input(xd,X.ButtonPress,2);xtest.fake_input(xd,X.ButtonRelease,2);xd.sync();time.sleep(.15);key('Return')
-    check(wait(lambda:primary_pasted.exists() and primary_pasted.read_text()=='PRIMARY_日本語'),'Middle-click pastes external UTF-8 PRIMARY into the FLTerm PTY')
-    check(selection(False)=='CLIPBOARD_SENTINEL','Middle-click paste keeps the Copy/Paste clipboard independent')
-    # Exercise real compositor wheel and keyboard input against a live PTY.
-    scroll_ready=runtime/'scroll-ready'
-    ctl(primary_socket,"type seq 1 200; printf ready > "+str(scroll_ready)+'\r')
-    wait(lambda:scroll_ready.exists() and snapshot(primary_socket)['history_rows']>100)
-    geometry=windows()[0]['desktop']
-    xtest.fake_input(xd,X.MotionNotify,x=int(geometry['x'])+100,y=int(geometry['y'])+100);xd.sync()
-    def wheel(button):
-        xtest.fake_input(xd,X.ButtonPress,button);xtest.fake_input(xd,X.ButtonRelease,button);xd.sync()
-    wheel(4)
-    check(wait(lambda:snapshot(primary_socket)['scroll_offset']>=3),'Mouse wheel up reveals older rows with standard scrolling direction')
-    wheel(5)
-    check(wait(lambda:snapshot(primary_socket)['scroll_offset']==0),'Mouse wheel down returns to live output')
-    chord(['Shift_L'],'Prior')
-    check(wait(lambda:snapshot(primary_socket)['scroll_offset']>3),'Shift+PageUp navigates history without sending a terminal key')
-    chord(['Shift_L'],'Next')
-    check(wait(lambda:snapshot(primary_socket)['scroll_offset']==0),'Shift+PageDown returns toward live output')
-    chord(['Shift_L'],'Home')
-    check(wait(lambda:snapshot(primary_socket)['scroll_offset']==snapshot(primary_socket)['history_rows']),'Shift+Home jumps to oldest retained output')
-    chord(['Shift_L'],'End')
-    check(wait(lambda:snapshot(primary_socket)['scroll_offset']==0),'Shift+End returns to live output')
-    wheel(4);wait(lambda:snapshot(primary_socket)['scroll_offset']>0)
-    type_text(' ')
-    check(wait(lambda:snapshot(primary_socket)['scroll_offset']==0),'Typing returns the viewport to the live prompt')
-    key('BackSpace')
+    if '--keyboard-only' not in sys.argv:
+        paste_env={**env,'WAYLAND_DISPLAY':wayland};pasted=runtime/'pasted'
+        subprocess.run(['wl-copy','--type','text/plain;charset=utf-8'],input=("printf '%s' 'Žluťoučký 日本語' > "+str(pasted)).encode(),env=paste_env,check=True,timeout=5)
+        chord(['Control_L','Shift_L'],'v');key('Return')
+        check(wait(lambda:pasted.exists() and pasted.read_text()=='Žluťoučký 日本語'),'FLTK Wayland clipboard paste preserves UTF-8')
+        # PRIMARY stays independent of the explicit Copy/Paste clipboard.
+        selected='PRIMARY_Žluťoučký'
+        primary_socket=next((runtime/'flterm-xr').glob('wayland-*.sock'))
+        ctl(primary_socket,"type printf '\\033[2J\\033[H%s' '"+selected+"'\r")
+        time.sleep(.3)
+        subprocess.run(['wl-copy','--type','text/plain;charset=utf-8'],input=b'CLIPBOARD_SENTINEL',env=paste_env,check=True,timeout=5)
+        geometry=windows()[0]['desktop']
+        x=int(geometry['x']);y=int(geometry['y'])+34+8
+        xtest.fake_input(xd,X.MotionNotify,x=x+1,y=y);xd.sync();time.sleep(.1)
+        xtest.fake_input(xd,X.ButtonPress,1);xd.sync();time.sleep(.05)
+        xtest.fake_input(xd,X.MotionNotify,x=x+len(selected)*8+1,y=y);xd.sync();time.sleep(.1)
+        xtest.fake_input(xd,X.ButtonRelease,1);xd.sync()
+        def selection(primary):
+            result=subprocess.run(['wl-paste',*(['--primary'] if primary else []),'--no-newline'],env=paste_env,capture_output=True,timeout=2)
+            return result.stdout.decode() if result.returncode==0 else None
+        check(wait(lambda:selection(True)==selected,timeout=5),'Left-drag selection publishes UTF-8 to Wayland PRIMARY')
+        check(selection(False)=='CLIPBOARD_SENTINEL','Primary selection leaves the Copy/Paste clipboard unchanged')
+        primary_pasted=runtime/'primary-pasted'
+        command="printf '%s' 'PRIMARY_日本語' > "+str(primary_pasted)
+        subprocess.run(['wl-copy','--primary','--type','text/plain;charset=utf-8'],input=command.encode(),env=paste_env,check=True,timeout=5)
+        time.sleep(.1)
+        xtest.fake_input(xd,X.ButtonPress,2);xtest.fake_input(xd,X.ButtonRelease,2);xd.sync();time.sleep(.15);host_image().save(out/'primary-before-return.png');key('Return')
+        check(wait(lambda:primary_pasted.exists() and primary_pasted.read_text()=='PRIMARY_日本語'),'Middle-click pastes external UTF-8 PRIMARY into the FLTerm PTY')
+        check(selection(False)=='CLIPBOARD_SENTINEL','Middle-click paste keeps the Copy/Paste clipboard independent')
+        # Exercise real compositor wheel and keyboard input against a live PTY.
+        scroll_ready=runtime/'scroll-ready'
+        ctl(primary_socket,"type seq 1 200; printf ready > "+str(scroll_ready)+'\r')
+        wait(lambda:scroll_ready.exists() and snapshot(primary_socket)['history_rows']>100)
+        geometry=windows()[0]['desktop']
+        xtest.fake_input(xd,X.MotionNotify,x=int(geometry['x'])+100,y=int(geometry['y'])+100);xd.sync()
+        def wheel(button):
+            xtest.fake_input(xd,X.ButtonPress,button);xtest.fake_input(xd,X.ButtonRelease,button);xd.sync()
+        wheel(4)
+        check(wait(lambda:snapshot(primary_socket)['scroll_offset']>=3),'Mouse wheel up reveals older rows with standard scrolling direction')
+        wheel(5)
+        check(wait(lambda:snapshot(primary_socket)['scroll_offset']==0),'Mouse wheel down returns to live output')
+        chord(['Shift_L'],'Prior')
+        check(wait(lambda:snapshot(primary_socket)['scroll_offset']>3),'Shift+PageUp navigates history without sending a terminal key')
+        chord(['Shift_L'],'Next')
+        check(wait(lambda:snapshot(primary_socket)['scroll_offset']==0),'Shift+PageDown returns toward live output')
+        chord(['Shift_L'],'Home')
+        check(wait(lambda:snapshot(primary_socket)['scroll_offset']==snapshot(primary_socket)['history_rows']),'Shift+Home jumps to oldest retained output')
+        chord(['Shift_L'],'End')
+        check(wait(lambda:snapshot(primary_socket)['scroll_offset']==0),'Shift+End returns to live output')
+        wheel(4);wait(lambda:snapshot(primary_socket)['scroll_offset']>0)
+        type_text(' ')
+        check(wait(lambda:snapshot(primary_socket)['scroll_offset']==0),'Typing returns the viewport to the live prompt')
+        key('BackSpace')
+    # Verify actual compositor/FLTK input bytes, including release events.
+    kitty_output=runtime/'kitty-input.json'
+    ctl(primary_socket,'type python3 '+str(root/'xr/tests/kitty-client.py')+' '+str(kitty_output)+'\r')
+    check(wait(lambda:kitty_output.with_suffix('.ready').exists()),'Kitty keyboard negotiation replies through the real PTY')
+    key('a');key('b',True);time.sleep(.8);key('b',False);chord(['Shift_L'],'Return');chord(['Control_L','Shift_L'],'x');key('F3');key('KP_1');key('Escape')
+    def kitty_bytes():return bytes.fromhex(json.loads(kitty_output.read_text())['hex'])
+    received=wait(lambda:kitty_bytes() if re.search(rb'\x1b\[27;[0-9]+:3u',kitty_bytes()) else None)
+    (out/'kitty-input.json').write_text(json.dumps({'hex':received.hex()}))
+    # The private compositor can initialize NumLock on; preserve it on the wire
+    # and normalize lock bits only for comparing these shortcut/event assertions.
+    received=re.sub(rb'(\x1b\[[0-9:]+;)([0-9]+)([^0-9])',
+                    lambda m:m[1]+str(1+((int(m[2])-1)&63)).encode()+m[3],received)
+    check(b'\x1b[97;1;97u' in received and b'\x1b[97;1:3u' in received,
+          'Wayland Kitty key presses include associated text and distinct releases')
+    check(b'\x1b[13;2u' in received and b'\x1b[13;2:3u' in received,
+          'Kitty Shift+Enter remains distinct from Enter in desktop input')
+    check(b'\x1b[120:88;6u' in received and b'\x1b[120:88;6:3u' in received,
+          'Kitty alternate keys and Ctrl+Shift modifiers survive real desktop events')
+    check((b'\x1b[13~' in received or b'\x1b[13;1~' in received) and b'\x1b[13;1:3~' in received,
+          'Kitty F3 uses its functional encoding including release')
+    check(b'\x1b[98;1:2;98u' in received and b'\x1b[98;1:3u' in received,
+          'Kitty held keys produce distinct desktop repeat and release events')
+    check(re.search(rb'\x1b\[(57400|57424);',received),
+          'Kitty keypad input retains its dedicated identity instead of merging with digits')
+    time.sleep(.2)
+    # Codex currently requests flags 7 rather than reporting all keys.
+    codex_output=runtime/'codex-input.json'
+    ctl(primary_socket,'type python3 '+str(root/'xr/tests/kitty-client.py')+' '+str(codex_output)+' 7\r')
+    check(wait(lambda:codex_output.with_suffix('.ready').exists()),'Codex Kitty flags 7 negotiate through the desktop PTY')
+    key('a');chord(['Shift_L'],'Return');key('Escape')
+    def codex_bytes():return bytes.fromhex(json.loads(codex_output.read_text())['hex'])
+    codex_input=wait(lambda:codex_bytes() if re.search(rb'\x1b\[27;[0-9]+:3u',codex_bytes()) else None)
+    codex_input=re.sub(rb'(\x1b\[[0-9:]+;)([0-9]+)([^0-9])',
+                       lambda m:m[1]+str(1+((int(m[2])-1)&63)).encode()+m[3],codex_input)
+    check(b'\x1b[13;2u' in codex_input,'Shift+Enter stays distinct in Codex flags 7 without enabling all-key reporting')
+    check(b'\x1b[?7ua' in codex_input and b'\x1b[97;1:3u' in codex_input,
+          'Codex mode keeps plain text and reports requested key releases')
+    time.sleep(.2)
+    if '--keyboard-only' in sys.argv:sys.exit(0)
     chord(['Super_L'],'t');check(wait(lambda:len(windows())==2),'Super+T creates another desktop terminal')
     paths=wait(lambda:list((runtime/'flterm-xr').glob('wayland-*.sock')) if len(list((runtime/'flterm-xr').glob('wayland-*.sock')))==2 else None)
     check(all(snapshot(path)['tabs']==1 for path in paths),'Desktop windows own separate control sockets and tab sets')

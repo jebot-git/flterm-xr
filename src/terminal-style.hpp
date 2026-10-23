@@ -8,6 +8,7 @@ namespace terminal_style {
 using Style = uint64_t;
 constexpr Style backgroundSet = 0x100, foregroundSet = 0x200;
 constexpr Style foregroundRGB = 0x400, backgroundRGB = 0x800, inverse = 0x1000;
+constexpr Style faint = 0x2000;
 constexpr Style foregroundMask = Style(0xffffff) << 16, backgroundMask = Style(0xffffff) << 40;
 inline constexpr std::array<std::array<uint8_t, 3>, 16> ansi{{
  {0,0,0},{192,0,0},{0,192,0},{192,192,0},{32,96,192},{192,0,192},{0,192,192},{192,192,192},
@@ -57,7 +58,8 @@ inline Style sgr(Style style,std::string_view input) {
    }
   } else if(code==0)style=7;
   else if(code==1)style|=8;
-  else if(code==22)style&=~Style(8);
+  else if(code==2)style|=faint;
+  else if(code==22)style&=~(Style(8)|faint);
   else if(code==7)style|=inverse;
   else if(code==27)style&=~inverse;
   else if(code==39)style=(style & ~(foregroundSet|foregroundRGB|foregroundMask|Style(15)))|7;
