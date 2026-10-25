@@ -29,7 +29,7 @@ ${custom.xr_status}\
 """
 
 [custom.de_xr]
-command = "printf de-xr"
+command = "id -un"
 when = true
 format = '[ $output ]($style)'
 style = "fg:lavender bg:crust"

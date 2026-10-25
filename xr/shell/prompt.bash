@@ -15,6 +15,6 @@ if command -v starship >/dev/null 2>&1; then
     fi
 else
     # ASCII-only fallback fits every DomeD bitmap strike, with readline-safe SGR.
-    PS1='\[\e[38;2;183;189;248m\][de-xr \w]\[\e[0m\]\n\[\e[38;2;139;213;202m\]\$ \[\e[0m\]'
+    PS1='\[\e[38;2;183;189;248m\][\u \w]\[\e[0m\]\n\[\e[38;2;139;213;202m\]\$ \[\e[0m\]'
 fi
 unset _dome_prompt_dir
