@@ -42,6 +42,7 @@ struct Options {
        noKeyboard = false, persist = true, standalone = false;
   bool sizeExplicit = false, widthExplicit = false, heightExplicit = false;
   bool xExplicit = false, yExplicit = false, zExplicit = false;
+  bool opacityExplicit = false, styledOpacityExplicit = false;
   int cols = 100, rows = 30, tabs = 1, pixels = 16;
   float seconds = 0, opacity = 0, styledOpacity = 1;
   uint32_t placement = 20;
@@ -74,7 +75,7 @@ static void help() {
          " --background-opacity A --styled-background-opacity A  Alpha in "
          "[0,1]\n"
          " --blend auto|opaque|alpha|additive --placement N\n"
-         " --layout-file FILE --no-save-layout  Overlay persistence only\n"
+         " --layout-file FILE --no-save-layout  XR layout/opacity persistence\n"
          " --seconds N --screenshot FILE --report FILE  Bounded validation\n"
          " Ctrl+Shift+T/W: new/close tab; Ctrl+PageUp/PageDown: switch tabs.\n"
          " Shift+PageUp/PageDown: scroll history; Shift+Home/End: oldest/live.\n"
@@ -151,11 +152,13 @@ static Options parse(int argc, char **argv) {
       o.yExplicit = true;
     } else if (arg == "--seconds")
       o.seconds = std::stof(value());
-    else if (arg == "--background-opacity")
+    else if (arg == "--background-opacity") {
       o.opacity = std::stof(value());
-    else if (arg == "--styled-background-opacity")
+      o.opacityExplicit = true;
+    } else if (arg == "--styled-background-opacity") {
       o.styledOpacity = std::stof(value());
-    else if (arg == "--placement") {
+      o.styledOpacityExplicit = true;
+    } else if (arg == "--placement") {
       int v = std::stoi(value());
       if (v <= 0)
         throw std::runtime_error("Placement must be positive");
@@ -230,15 +233,19 @@ struct App {
     if (options.persist)
       if (auto saved = state.load()) {
         if (!options.widthExplicit)
-          layout.width = saved->width;
+          layout.width = saved->layout.width;
         if (!options.heightExplicit)
-          layout.height = saved->height;
+          layout.height = saved->layout.height;
         if (!options.xExplicit)
-          layout.x = saved->x;
+          layout.x = saved->layout.x;
         if (!options.yExplicit)
-          layout.y = saved->y;
+          layout.y = saved->layout.y;
         if (!options.zExplicit)
-          layout.z = saved->z;
+          layout.z = saved->layout.z;
+        if (!options.opacityExplicit)
+          renderer.opacity = saved->opacity;
+        if (!options.styledOpacityExplicit)
+          renderer.styledOpacity = saved->styledOpacity;
       }
     initial = layout;
     for (int i = 0; i < options.tabs; ++i)
@@ -461,6 +468,9 @@ struct App {
     }
     return true;
   }
+  OverlaySettings overlaySettings() const {
+    return {layout, renderer.opacity, renderer.styledOpacity};
+  }
   Json status() const {
     return {{"backend", "FLTerm"},
             {"mode", options.desktop    ? "wayland"
@@ -479,6 +489,7 @@ struct App {
             {"font_pixels", renderer.ch},
             {"light", renderer.light},
             {"opacity", renderer.opacity},
+            {"styled_opacity", renderer.styledOpacity},
             {"layout",
              {{"width", layout.width},
               {"height", layout.height},
@@ -962,7 +973,11 @@ int main(int argc, char **argv) try {
     }
   }
   auto start = std::chrono::steady_clock::now(), nextAppearance = start;
-  auto saved = app.layout;
+  auto saved = app.overlaySettings();
+  // Also persist first-launch defaults and explicit launch overrides, even if
+  // the user makes no subsequent adjustment. Hidden overlays use this path too.
+  if (options.persist)
+    app.state.changed(saved);
   while (!stopped && !app.tabs.empty() && (!app.xr || !app.xr->quit)) {
     auto now = std::chrono::steady_clock::now();
     if (options.seconds > 0 &&
@@ -1029,9 +1044,10 @@ int main(int argc, char **argv) try {
       app.xr->frame(app.visible, app.renderer.pixels);
     }
     if (options.persist) {
-      if (!(saved == app.layout)) {
-        app.state.changed(app.layout);
-        saved = app.layout;
+      auto current = app.overlaySettings();
+      if (!(saved == current)) {
+        app.state.changed(current);
+        saved = current;
       }
       app.state.tick();
     }
@@ -1052,8 +1068,11 @@ int main(int argc, char **argv) try {
     app.keyboard->focus(false);
   if (app.pointer)
     app.pointer->focus(false);
-  if (options.persist)
+  if (options.persist) {
+    // A quit or final-tab exit can precede the normal change/debounce check.
+    app.state.changed(app.overlaySettings());
     app.state.flush();
+  }
   if (!options.screenshot.empty())
     screenshot(options.screenshot, app.renderer);
   if (!options.report.empty()) {

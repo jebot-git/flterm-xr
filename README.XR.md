@@ -109,9 +109,16 @@ The overlay owns `$XDG_RUNTIME_DIR/flterm-xr/control.sock`. Desktop instances pr
 `$XDG_RUNTIME_DIR/flterm-xr/wayland-PID.sock`; use `--socket` to address one.
 `status` reports mode, shell/tab counts, geometry, Appearance, native frame counts
 and desktop menu addresses. Direct launcher reactivation shows the existing
-overlay. Native size/position persist atomically in
-`$XDG_CONFIG_HOME/flterm-xr/layout.json`, with `--layout-file` and
-`--no-save-layout` overrides. Desktop instances do not touch this file.
+overlay. The XR position, physical width/height (including scaling), canvas
+opacity and styled ANSI background opacity are saved automatically after a
+250 ms pause in adjustments and flushed on exit, including while hidden.
+They are restored from `$XDG_CONFIG_HOME/flterm-xr/layout.json` (or
+`~/.config/flterm-xr/layout.json`) on the next overlay launch. Existing layout
+files remain compatible. Keyboard adjustments and `flterm-xrctl` changes share
+this persistence path. Explicit geometry or opacity launch options override
+only their corresponding saved values and become the new saved settings.
+`--layout-file FILE` uses a different settings file; `--no-save-layout` disables
+both restoration and saving. Desktop instances do not touch this file.
 
 ## Validation and current limits
 
