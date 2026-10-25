@@ -190,6 +190,9 @@ void Fl_Term::clear()
 	Fl::lock();
     free(main_screen_.text); free(main_screen_.styles); free(main_screen_.lines);
     main_screen_ = {};
+    link_ids_.assign(262144, 0); main_links_.clear();
+    image_colors_.assign(262144,0); main_image_colors_.clear(); image_color_ = main_image_color_ = 0;
+    link_uris_ = {""}; active_link_ = main_link_ = 0;
     view_top_ = -1;
     save_x = save_y = 0;
     save_attr = 7;
@@ -211,7 +214,7 @@ void Fl_Term::clear()
 	bInsert = bEscape = bGraphic = false;
     control_string = 0; control_escape = false; control_payload.clear();
     utf8_pending_.clear(); keyboard_modes_.reset();
-    synchronized_snapshot_.reset();
+    synchronized_snapshot_.reset(); graphics_[0] = {}; graphics_[1] = {};
 	bBracket = bAltScreen = bAppCursor = bOriginMode = false;
     mouseTracking_ = 0;
 	bWraparound = true;
@@ -434,6 +437,7 @@ void Fl_Term::reserveBuffer(int bytes, int rows)
         int capacity = std::max(bytes, buff_size * 2);
         // Allocate both arrays before replacing either, so allocation failure
         // never leaves a dangling buffer or mismatched UTF-8 attributes.
+        link_ids_.resize(capacity); image_colors_.resize(capacity);
         char *next = static_cast<char *>(calloc(capacity, 1));
         auto *next_attr = static_cast<uint64_t *>(calloc(capacity, sizeof(*attr)));
         if (!next || !next_attr) {
@@ -462,9 +466,14 @@ void Fl_Term::trimHistory()
 {
     if (bAltScreen || screen_y <= history_limit_) return;
     int removed = screen_y - history_limit_, bytes = line[removed];
+    graphics_[0].trim(removed,font_width,font_height);
     int last = std::max(cursor_y + 1, screen_y + size_y);
     while (last > cursor_y + 1 && line[last] == 0) --last;
     int end = std::max(cursor_x, line[last]);
+    std::move(image_colors_.begin()+bytes,image_colors_.begin()+end,image_colors_.begin());
+    std::fill(image_colors_.begin()+end-bytes,image_colors_.begin()+end,0);
+    std::move(link_ids_.begin()+bytes, link_ids_.begin()+end, link_ids_.begin());
+    std::fill(link_ids_.begin()+end-bytes, link_ids_.begin()+end, 0);
     memmove(buff, buff + bytes, end - bytes);
     memmove(attr, attr + bytes, (end - bytes) * sizeof(*attr));
     memset(buff + end - bytes, 0, bytes);
@@ -491,16 +500,22 @@ void Fl_Term::alternateBuffer(bool enable)
         main_screen_ = {buff, attr, line, buff_size, line_size, cursor_x, cursor_y,
                         screen_y, view_top_, sel_left, sel_right, save_x, save_y,
                         roll_top, roll_bot, recv0, c_attr, save_attr};
+        main_image_colors_ = std::move(image_colors_); main_image_color_ = image_color_; image_color_ = 0; image_colors_.assign(262144,0);
+        main_links_ = std::move(link_ids_); main_link_ = active_link_; active_link_ = 0;
+        link_ids_.assign(262144, 0);
         buff = text; attr = styles; line = lines;
         buff_size = 262144; line_size = 4096;
         cursor_x = cursor_y = screen_y = 0;
         view_top_ = -1; sel_left = sel_right = recv0 = save_x = save_y = 0;
         roll_top = 0; roll_bot = size_y-1;
+        graphics_[1] = {};
         bAltScreen = true;
         screen_clear(2);
     } else {
         free(buff); free(attr); free(line);
         auto saved = main_screen_; main_screen_ = {};
+        image_colors_ = std::move(main_image_colors_); image_color_ = main_image_color_;
+        link_ids_ = std::move(main_links_); active_link_ = main_link_;
         buff = saved.text; attr = saved.styles; line = saved.lines;
         buff_size = saved.bytes; line_size = saved.rows;
         cursor_x = saved.x; cursor_y = saved.y; screen_y = saved.top;
@@ -535,12 +550,15 @@ void Fl_Term::scrollScreenUp()
     cursor_x = line[cursor_y] + std::min(column, size_x-1);
     if (software_) cursor_x = cellOffset(cursor_y,std::min(cell,size_x-1));
 }
-void Fl_Term::append( const char *newtext, int len )
+void Fl_Term::append(const char *newtext, int len) {
+    std::lock_guard<std::mutex> lock(append_mtx);
+    appendUnlocked(newtext,len);
+}
+void Fl_Term::appendUnlocked( const char *newtext, int len )
 {
 	const unsigned char *p = (const unsigned char *)newtext;
 	const unsigned char *zz = p+len;
 	
-	std::lock_guard<std::mutex> lock(append_mtx);
 	if ( fpLogFile!=NULL ) fwrite( newtext, 1, len, fpLogFile );
 	if ( bEscape ) p = vt100_Escape( p, zz-p );
 	while ( p < zz ) {
@@ -551,7 +569,10 @@ void Fl_Term::append( const char *newtext, int len )
             const bool terminated = (control_escape && c == '\\') ||
                                     (control_string == ']' && c == 0x07);
             if (cancelled || terminated) {
-                if (!cancelled && control_string==']' &&
+                if (cancelled || control_overflow_) graphics_[bAltScreen].cancel();
+                if (!cancelled && !control_overflow_ && control_string == '_' && control_payload.starts_with("G"))
+                    graphicsCommand(control_payload);
+                if (!cancelled && !control_overflow_ && control_string==']' &&
                     (control_payload=="10;?" || control_payload=="11;?")) {
                     auto color=control_payload[1]=='0'?default_foreground_:default_background_;
                     char reply[64];
@@ -559,20 +580,34 @@ void Fl_Term::append( const char *newtext, int len )
                         control_payload[0],control_payload[1],color[0]*257,color[1]*257,color[2]*257);
                     write(reply,length);
                 }
-                if (!cancelled && control_string == ']' &&
+                if (!cancelled && !control_overflow_ && control_string == ']' &&
                     (control_payload.starts_with("0;") || control_payload.starts_with("2;"))) {
                     auto title = control_payload.substr(2, sizeof(sTitle)-1);
                     memcpy(sTitle, title.data(), title.size()); sTitle[title.size()] = 0;
                     do_callback(this, (void *)sTitle);
                 }
+                if (!cancelled && !control_overflow_ && control_string == ']' && control_payload.starts_with("8;"))
+                    hyperlink(control_payload);
+                std::string passthrough;
+                if(!cancelled && !control_overflow_ && control_string=='P' && control_payload.starts_with("tmux;"))
+                    passthrough=control_payload.substr(5);
                 control_string = 0; control_escape = false; control_payload.clear();
+                if(!passthrough.empty() && passthrough_depth_<8) {
+                    ++passthrough_depth_;
+                    appendUnlocked(passthrough.data(),passthrough.size());
+                    --passthrough_depth_;
+                }
             } else if (c == 0x1b) {
-                control_escape = true;
+                if(control_escape && control_string=='P' && control_payload.starts_with("tmux;")) {
+                    if(control_payload.size()<8192)control_payload+='\033';else control_overflow_=true;
+                    control_escape=false;
+                } else control_escape = true;
             } else {
                 control_escape = false;
                 // Unsupported control strings can contain arbitrary metadata.
                 // Bound storage but keep consuming until BEL/ST, even across reads.
-                if (control_payload.size() < 4096) control_payload += char(c);
+                if (control_payload.size() < 8192) control_payload += char(c);
+                else control_overflow_ = true;
             }
             continue;
         }
@@ -718,6 +753,8 @@ void Fl_Term::append( const char *newtext, int len )
 void Fl_Term::buff_clear(int offset, int len)
 {
     reserveBuffer(offset + len + 1024, screen_y + size_y + 4);
+    std::fill(image_colors_.begin()+offset,image_colors_.begin()+offset+len,0);
+    std::fill(link_ids_.begin()+offset, link_ids_.begin()+offset+len, 0);
 	memset(buff+offset, ' ', len);
 	std::fill(attr+offset, attr+offset+len, 7);
 }
@@ -1145,6 +1182,7 @@ const unsigned char *Fl_Term::vt100_Escape(const unsigned char *sz, int cnt)
         case 'X': // SOS
         case '^': // PM
         case '_': // APC
+            control_overflow_ = false;
             control_string = ESC_code[0];
             control_escape = false; control_payload.clear();
             bEscape = false;

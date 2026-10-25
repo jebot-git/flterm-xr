@@ -11,7 +11,8 @@
 struct Terminal : Fl_Term {
   PtyHost *pty;
   explicit Terminal(int cols, int rows,
-                    const std::vector<std::string> &command);
+                    const std::vector<std::string> &command, std::string realm = "DE");
+  void cellSize(int width,int height) { Fl_Term::cellSize(width,height);pty->cellSize(width,height); }
   void draw() override {}
 };
 struct Renderer {

@@ -74,6 +74,10 @@ try:
         'GSETTINGS_SCHEMA_DIR':'/usr/share/glib-2.0/schemas','GTK_USE_PORTAL':'0','NO_AT_BRIDGE':'1','GIO_USE_VFS':'local',
         'SHELL':'/bin/sh','LIBGL_ALWAYS_SOFTWARE':'1','RUST_LOG':'warn'}
     for name in ['DISPLAY','WAYLAND_DISPLAY','WAYLAND_SOCKET']:env.pop(name,None)
+    mockbin=runtime/'bin';mockbin.mkdir()
+    opened=runtime/'opened-link'
+    opener=mockbin/'xdg-open';opener.write_text('#!/bin/sh\nprintf "%s" "$1" > "'+str(opened)+'"\n');opener.chmod(0o700)
+    env['PATH']=str(mockbin)+':'+env.get('PATH','/usr/bin:/bin')
     overlay_path=runtime/'flterm-xr/control.sock';layout=runtime/'overlay-layout.json'
     overlay=start([str(root/'build/flterm-xr'),'--headless','--hidden','--no-keyboard','--layout-file',str(layout)],'overlay',env)
     wait(lambda:overlay_path.exists());initial=wait(lambda:snapshot(overlay_path))
@@ -133,6 +137,19 @@ try:
         xtest.fake_input(xd,X.ButtonPress,2);xtest.fake_input(xd,X.ButtonRelease,2);xd.sync();time.sleep(.15);host_image().save(out/'primary-before-return.png');key('Return')
         check(wait(lambda:primary_pasted.exists() and primary_pasted.read_text()=='PRIMARY_日本語'),'Middle-click pastes external UTF-8 PRIMARY into the FLTerm PTY')
         check(selection(False)=='CLIPBOARD_SENTINEL','Middle-click paste keeps the Copy/Paste clipboard independent')
+        ctl(primary_socket,"type printf '\\033[2J\\033[H\\033]8;;https://example.invalid/native-link\\033\\\\OPEN LINK\\033]8;;\\033\\\\'\r")
+        time.sleep(.4)
+        key('Control_L',True)
+        xtest.fake_input(xd,X.MotionNotify,x=x+20,y=y);xtest.fake_input(xd,X.ButtonPress,1);xtest.fake_input(xd,X.ButtonRelease,1);xd.sync()
+        key('Control_L',False)
+        check(wait(lambda:opened.exists() and opened.read_text()=='https://example.invalid/native-link'),'Ctrl+click opens the OSC 8 target through the default URL handler')
+        opened.unlink()
+        ctl(primary_socket,"type printf '\\033[2J\\033[Hhttps://example.invalid/plain-link\\r\\n'\r")
+        time.sleep(.4);key('Control_L',True)
+        xtest.fake_input(xd,X.MotionNotify,x=x+20,y=y);xtest.fake_input(xd,X.ButtonPress,1);xtest.fake_input(xd,X.ButtonRelease,1);xd.sync()
+        key('Control_L',False)
+        check(wait(lambda:opened.exists() and opened.read_text()=='https://example.invalid/plain-link'),'Ctrl+click opens a detected plain-text URL')
+
         # A real desktop click must update readline, then insert into the command.
         ctl(primary_socket,"type exec env PS1='> ' HISTFILE=/dev/null /bin/bash --noprofile --norc -i\r")
         time.sleep(.4);chord(['Control_L'],'l');time.sleep(.2)
@@ -171,6 +188,11 @@ try:
         check(wait(lambda:snapshot(primary_socket)['scroll_offset']==0),'Typing returns the viewport to the live prompt')
         key('BackSpace')
     # Verify actual compositor/FLTK input bytes, including release events.
+    graphics_output=runtime/'kitty-graphics.json'
+    ctl(primary_socket,'type python3 '+str(root/'xr/tests/kitty-graphics-client.py')+' '+str(graphics_output)+'\r')
+    check(wait(lambda:graphics_output.exists()),'Kitty graphics queries, image acknowledgements and pixel dimensions work through a real PTY')
+    (out/'kitty-graphics.json').write_text(graphics_output.read_text())
+    time.sleep(.15)
     kitty_output=runtime/'kitty-input.json'
     ctl(primary_socket,'type python3 '+str(root/'xr/tests/kitty-client.py')+' '+str(kitty_output)+'\r')
     check(wait(lambda:kitty_output.with_suffix('.ready').exists()),'Kitty keyboard negotiation replies through the real PTY')
@@ -234,6 +256,30 @@ try:
     check(snapshot(overlay_path)['tabs']==1 and sorted(snapshot(path)['tabs'] for path in paths)==[1,2],'Font changes preserve every desktop and XR tab')
     time.sleep(.6);host_image().save(out/'desktop.png')
     check(compositor.poll() is None and overlay.poll() is None,'Compositor and persistent overlay remain healthy')
+    primary_env={**env,'WAYLAND_DISPLAY':wayland,'FLTK_BACKEND':'wayland','DISPLAY':''}
+    def probes(): return [w for w in api('/api/state')['scene']['windows'] if w['app_id']=='org.domed.PrimaryProbe']
+    first_output=runtime/'fltk-first-paste';second_output=runtime/'fltk-second-paste'
+    probe1=start([str(root/'build/fltk-primary-test-client'),str(first_output)],'primary-first',primary_env)
+    wait(lambda:len(probes())==1);time.sleep(.4)
+    key('F1')
+    expected='FLTK_PRIMARY_Žluťoučký_日本語'
+    check(wait(lambda:selection(True)==expected),'Independent FLTK client publishes UTF-8 through Fl::copy(selection=0)')
+    probe2=start([str(root/'build/fltk-primary-test-client'),str(second_output)],'primary-second',primary_env)
+    wait(lambda:len(probes())==2);time.sleep(.4);key('F2')
+    check(wait(lambda:second_output.exists() and second_output.read_text()==expected),'Separate FLTK processes exchange PRIMARY using native toolkit APIs')
+    external='EXTERNAL_PRIMARY_日本語'
+    subprocess.run(['wl-copy','--primary','--type','text/plain;charset=utf-8'],input=external.encode(),env=primary_env,check=True,timeout=5)
+    time.sleep(.15);key('F2')
+    check(wait(lambda:second_output.read_text()==external),'External ownership replaces stale FLTK selection data')
+    key('F1');key('F2')
+    check(wait(lambda:second_output.read_text()==expected),'FLTK selection owner can paste its own PRIMARY without a deadlock')
+    check(selection(False)=='CLIPBOARD_SENTINEL','Independent FLTK PRIMARY operations preserve the explicit clipboard')
+    large='LARGE_日本語\n'*200000
+    subprocess.run(['wl-copy','--primary','--type','text/plain;charset=utf-8'],input=large.encode(),env=primary_env,check=True,timeout=5)
+    time.sleep(.15);key('F2')
+    check(wait(lambda:second_output.read_text()==large),'FLTK receives a multi-megabyte UTF-8 PRIMARY without blocking the event loop')
+
+
 finally:
     (out/'report.json').write_text(json.dumps(checks,indent=2)+'\n')
     if xd:xd.close()

@@ -27,11 +27,24 @@
 #include <optional>
 #include <chrono>
 #include "kitty-keyboard.hpp"
+#include "kitty-graphics.hpp"
 
 #ifndef _FL_TERM_H_
 #define _FL_TERM_H_
 class Fl_Term : public Fl_Widget {
     bool software_ = false;
+    std::vector<uint32_t> link_ids_, main_links_;
+    std::vector<uint64_t> image_colors_, main_image_colors_;
+    uint64_t image_color_ = 0, main_image_color_ = 0;
+    void imageColors(std::string_view);
+    std::vector<std::string> link_uris_{""};
+    uint32_t active_link_ = 0, main_link_ = 0;
+    KittyGraphics graphics_[2];
+    bool control_overflow_ = false;
+    unsigned passthrough_depth_ = 0;
+    void appendUnlocked(const char *,int);
+    void graphicsCommand(std::string_view);
+    void hyperlink(std::string_view payload);
 	uint64_t c_attr;		//current character attribute(color)
 	uint64_t save_attr;		//saved character attribute, used with save_x/save_y
 	char *buff;			//buffer for characters, one byte per char
@@ -142,14 +155,15 @@ protected:
 	const unsigned char *telnet_options(const unsigned char *buf, int cnt);
 
 public:
-    struct Run { int row, column, columns; std::string text; uint64_t style; bool selected; };
-    struct Snapshot { std::vector<Run> runs; int cursorColumn, cursorRow; bool cursor; };
+    struct Run { int row, column, columns; std::string text; uint64_t style; bool selected; std::string link; };
+    struct Snapshot { std::vector<Run> runs; int cursorColumn, cursorRow; bool cursor; std::vector<KittyGraphics::Draw> images; };
 private:
     std::optional<Snapshot> synchronized_snapshot_;
     std::chrono::steady_clock::time_point synchronized_until_;
     Snapshot liveSnapshot();
 public:
     Snapshot snapshot();
+    bool animateGraphics();
     void cellSize(int width, int height);
     void grid(int cols, int rows);
     void scrollRows(int amount);
@@ -158,6 +172,7 @@ public:
     int scrollOffset() const { return screen_y - viewTop(); }
     void pasteText(const std::string &text);
     void selectCells(int column, int row, bool begin);
+    std::string linkAt(int column, int row);
     bool positionCursor(int column, int row);
     void selectAll();
     std::string selectionText();

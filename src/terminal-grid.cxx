@@ -37,6 +37,10 @@ void Fl_Term::replaceRowBytes(int row, int first, int last,
     end = std::max(end, line[i]);
   const int delta = int(text.size()) - (last - first);
   reserveBuffer(end + std::max(0, delta) + 1024, finalRow + 4);
+  memmove(image_colors_.data()+last+delta,image_colors_.data()+last,(end-last)*sizeof(uint64_t));
+  std::fill(image_colors_.begin()+first,image_colors_.begin()+first+text.size(),0);
+  memmove(link_ids_.data()+last+delta, link_ids_.data()+last, (end-last)*sizeof(uint32_t));
+  std::fill(link_ids_.begin()+first, link_ids_.begin()+first+text.size(), 0);
   memmove(buff + last + delta, buff + last, end - last);
   memmove(attr + last + delta, attr + last, (end - last) * sizeof(*attr));
   memcpy(buff + first, text.data(), text.size());
@@ -118,6 +122,8 @@ void Fl_Term::putGlyph(std::string_view text) {
   if (!width) {
     int at = cursor_x;
     replaceRowBytes(cursor_y, at, at, text);
+    std::fill(image_colors_.begin()+at,image_colors_.begin()+at+text.size(),image_color_);
+    std::fill(link_ids_.begin()+at, link_ids_.begin()+at+text.size(), active_link_);
     cursor_x = at + text.size();
     return;
   }
@@ -125,24 +131,33 @@ void Fl_Term::putGlyph(std::string_view text) {
     softwareCsi("1@");
   replaceCells(cursor_y, column, column + width, text);
   cursor_x = cellOffset(cursor_y, column + width);
+  std::fill(image_colors_.begin()+cellOffset(cursor_y,column),image_colors_.begin()+cursor_x,image_color_);
+  std::fill(link_ids_.begin()+cellOffset(cursor_y,column), link_ids_.begin()+cursor_x, active_link_);
 }
 void Fl_Term::scrollRegion(int top, int bottom, int amount) {
+  graphics_[bAltScreen].scroll(top,bottom,amount,font_width,font_height);
   materializeRows();
   int savedRow = cursor_y, savedColumn = cellColumn(cursor_y, cursor_x);
   const int count = std::min(std::abs(amount), bottom - top + 1);
   struct Row {
     std::string text;
     std::vector<uint64_t> styles;
+    std::vector<uint32_t> links;
+    std::vector<uint64_t> colors;
   };
   std::vector<Row> rows;
   for (int r = top; r <= bottom; ++r)
     rows.push_back({std::string(buff + line[r], line[r + 1] - line[r]),
-                    std::vector<uint64_t>(attr + line[r], attr + line[r + 1])});
+                    std::vector<uint64_t>(attr + line[r], attr + line[r + 1]),
+                    std::vector<uint32_t>(link_ids_.begin()+line[r],link_ids_.begin()+line[r+1]),
+                    std::vector<uint64_t>(image_colors_.begin()+line[r],image_colors_.begin()+line[r+1])});
   for (int r = top; r <= bottom; ++r) {
     int source = r - top + (amount > 0 ? count : -count);
     if (source >= 0 && source < int(rows.size())) {
       auto &row = rows[source];
       replaceRowBytes(r, line[r], line[r + 1], row.text, row.styles.data());
+      std::copy(row.colors.begin(),row.colors.end(),image_colors_.begin()+line[r]);
+      std::copy(row.links.begin(),row.links.end(),link_ids_.begin()+line[r]);
     } else
       replaceRowBytes(r, line[r], line[r + 1], std::string(size_x, ' '));
   }
@@ -170,10 +185,12 @@ bool Fl_Term::softwareCsi(std::string_view sequence) {
       write(reply.data(), reply.size());
     return true;
   }
-  if (final == 'm')
+  if (final == 'm') {
+    if (parameters.empty() || std::string_view("?<>=").find(parameters.front()) == std::string_view::npos) imageColors(parameters);
     return !parameters.empty() &&
            std::string_view("?<>=").find(parameters.front()) !=
                std::string_view::npos;
+  }
   // Private/intermediate CSI sequences must never execute ANSI save/restore.
   if (parameters.find_first_not_of("0123456789;") != parameters.npos) {
     if (final == 'u' || final == 's' || final == 'm')
@@ -228,6 +245,14 @@ bool Fl_Term::softwareCsi(std::string_view sequence) {
   case 'd':
     move(n - 1 + (bOriginMode ? roll_top : 0), column);
     return true;
+  case 't':
+    if(a==14 || a==16 || a==18) {
+      reply="\033["+std::to_string(a==14?4:a==16?6:8)+";"+
+        std::to_string(a==14?size_y*font_height:a==16?font_height:size_y)+";"+
+        std::to_string(a==14?int(size_x*font_width):a==16?int(font_width):size_x)+"t";
+      write(reply.data(),reply.size());
+    }
+    return true;
   case 'n':
     if (a == 6)
       reply = "\033[" + std::to_string(row + 1 - (bOriginMode ? roll_top : 0)) +
@@ -242,6 +267,7 @@ bool Fl_Term::softwareCsi(std::string_view sequence) {
   case 'X': {
     if ((final == 'J' && a > 3) || (final == 'K' && a > 2))
       return true;
+    if (final=='J' && a==2) graphics_[bAltScreen].clearVisible(screen_y,size_y,font_width,font_height);
     materializeRows();
     int firstRow = cursor_y, lastRow = cursor_y;
     if (final == 'J') {
@@ -317,5 +343,57 @@ bool Fl_Term::softwareCsi(std::string_view sequence) {
     return true;
   default:
     return false;
+  }
+}
+
+void Fl_Term::graphicsCommand(std::string_view payload) {
+  auto result=graphics_[bAltScreen].command(payload,{cellColumn(cursor_y,cursor_x),cursor_y,screen_y,size_y,size_x,int(font_width),font_height});
+  if(!result.reply.empty())write(result.reply.data(),result.reply.size());
+  if(result.columns || result.rows) {
+    int column=std::min(size_x-1,cellColumn(cursor_y,cursor_x)+result.columns);
+    for(int row=0;row<std::min(result.rows,size_y);++row)
+      vt100_Escape(reinterpret_cast<const unsigned char *>("D"),1);
+    materializeRows();cursor_x=cellOffset(cursor_y,column);
+  }
+}
+bool Fl_Term::animateGraphics() {
+  std::lock_guard<std::mutex> lock(append_mtx);
+  bool changed=graphics_[bAltScreen].animate();if(changed)pending(true);return changed;
+}
+// Preserve the numeric palette index (not its RGB expansion) for Kitty image
+// IDs, and the independent underline color used as a placement ID.
+void Fl_Term::imageColors(std::string_view sequence) {
+  std::vector<std::vector<int>> groups(1,std::vector<int>(1,-1));
+  for(char c:sequence) {
+    if(c==';')groups.push_back({-1});
+    else if(c==':')groups.back().push_back(-1);
+    else if(c>='0'&&c<='9') {auto &v=groups.back().back();v=std::min(100000,v<0?c-'0':v*10+c-'0');}
+    else return;
+  }
+  auto set=[&](bool underline,uint32_t value) {
+    if(underline)image_color_=(image_color_&0xffffffffu)|(uint64_t(value)<<32);
+    else image_color_=(image_color_&0xffffffff00000000ull)|value;
+  };
+  for(size_t i=0;i<groups.size();++i) {
+    int code=std::max(0,groups[i][0]);
+    if(!code)image_color_=0;
+    else if(code==39)set(false,0);
+    else if(code==59)set(true,0);
+    else if(code>=30 && code<=37)set(false,code-30);
+    else if(code>=90 && code<=97)set(false,code-90+8);
+    else if(code==38 || code==48 || code==58) {
+      auto args=groups[i];
+      if(args.size()==1 && i+1<groups.size()) {
+        int n=groups[i+1][0]==5?2:groups[i+1][0]==2?4:1;
+        while(n-- && i+1<groups.size())args.push_back(groups[++i][0]);
+      }
+      if(code==48)continue;
+      if(args.size()==3 && args[1]==5 && args[2]>=0 && args[2]<=255)set(code==58,args[2]);
+      else if((args.size()==5 || args.size()==6) && args[1]==2) {
+        size_t at=args.size()==6?3:2;
+        if(args[at]>=0 && args[at]<=255 && args[at+1]>=0 && args[at+1]<=255 && args[at+2]>=0 && args[at+2]<=255)
+          set(code==58,(args[at]<<16)|(args[at+1]<<8)|args[at+2]);
+      }
+    }
   }
 }

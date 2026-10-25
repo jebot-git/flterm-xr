@@ -155,7 +155,20 @@ Shell input retains legacy encodings until applications enable enhancements.
 Terminal shortcuts listed above remain reserved by the frontend. The diagnostic
 X11 preview uses the key information available from FLTK.
 
-Kitty graphics and full grapheme-cluster handling remain unsupported.
+Kitty graphics uses per-tab, per-screen image storage and supports RGB, RGBA,
+PNG, zlib, chunked direct transfers, regular/temporary files and POSIX shared
+memory, queries and quiet/error replies, image IDs/numbers, crop/scale/offsets,
+placements and deletion, z ordering, relative placement chains, Unicode
+placeholders (including underline-color placement IDs), animation frames,
+frame composition and timed playback. Tmux DCS passthrough is decoded. Both
+frontends render the same premultiplied image canvas through OpenGL. Images
+follow scrollback and page margins, and synchronized updates include images.
+Pixel dimensions are available through CSI 14/16/18 t and the PTY window size.
+Decoded images are limited to 128 MiB each, with a 320 MiB per-screen quota;
+invalid commands return protocol errors rather than claiming success.
+This implements application-facing keyboard/graphics interoperability; Kitty's
+remote-control API, Python kittens and Kitty-specific window management are
+not emulated. Full grapheme-cluster handling remains unsupported.
 Desktop FLTK composition and clipboard use
 the native seat; advanced IME conversion needs further interactive verification.
 Native overlay IME and live keyboard-group changes during an input grab are not
@@ -207,3 +220,50 @@ Prompt icons use bundled BDF fallbacks (Cozette and Scientifica) so their glyphs
 remain available when the desktop font collection changes. Their licenses and
 pinned source checksums are installed alongside the fonts in
 `share/flterm-xr/fonts`.
+
+### Links and PRIMARY
+
+Ctrl+left-click opens OSC 8 links and detected HTTP(S), FTP(S), SSH, file and
+email URLs using the desktop's default handler. Hover reveals the target;
+right-click offers Open link and Copy link address. Dragging still selects text.
+Targets survive edits, soft wraps, scrollback and main/alternate-screen changes.
+The XR overlay uses the same Ctrl+click handling.
+
+DomeD's `fltk-1.4.5-primary-selection.patch` implements the native Wayland PRIMARY
+protocol in the shared toolkit: `Fl::copy(..., 0)` publishes the selection and
+`Fl::paste(..., 0)` receives it asynchronously. Explicit Copy/Paste remains
+selection 1. FLTerm desktop windows use these toolkit APIs directly. The patch
+applies to all applications using that shared FLTK build; applications linked
+statically or to another FLTK installation need the same patch and a rebuild.
+Existing processes keep their loaded toolkit until they are reopened normally.
+
+### de-xr bitmap prompt
+
+`xr/shell/starship.toml` adapts the existing two-line Catppuccin Macchiato prompt.
+It preserves directory/Git status, command status and duration, and replaces
+battery with **XR** / **DE**, supplied by each terminal's
+`DOME_TERMINAL_REALM`. Icons use readable text labels; the remaining separators
+are verified at native 1x/2x BDF sizes. No Nerd Font or emoji font is required.
+
+Run `python3 scripts/install-user-prompt.py` to enable it in future interactive
+Bash shells under DomeD or FLTerm. Other sessions keep their prompt. An explicit
+`STARSHIP_CONFIG` takes precedence; `DOME_PROMPT=0` opts out. Bash falls back to a
+readline-safe ASCII/color PS1 if Starship is unavailable.
+
+Stage an optimized release and the shared toolkit, then install system files:
+
+```sh
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DFLTK_DIR=../fltk-vr/_toolkit/share/fltk \
+  -DFLTERM_INSTALL_RPATH=/opt/fltk-vr/toolkit/lib
+cmake --build build -j4
+ctest --test-dir build --output-on-failure
+python3 scripts/stage-local.py /absolute/path/to/stage
+sudo python3 scripts/install-staged.py /absolute/path/to/stage
+```
+
+The installer verifies hashes, backs up existing files and atomically replaces
+executables/libraries. It does not restart desktop or display-manager sessions.
+`kitty-graphics` and `links` CTests cover the protocol/parser/rendering paths;
+the private desktop integration also opens links through a test URL handler and
+exchanges PRIMARY with independent FLTK clients and wl-clipboard.

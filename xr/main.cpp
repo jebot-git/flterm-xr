@@ -252,7 +252,7 @@ struct App {
       return;
     auto group = Fl_Group::current();
     Fl_Group::current(nullptr);
-    auto t = std::make_unique<Terminal>(options.cols, options.rows, command);
+    auto t = std::make_unique<Terminal>(options.cols, options.rows, command, options.desktop ? "DE" : "XR");
     Fl_Group::current(group);
     t->cellSize(renderer.cw, renderer.ch);
     identities[t.get()] = nextTab++;
@@ -261,12 +261,16 @@ struct App {
     renderer.preedit.clear();
     dirty = true;
   }
-  void pointerBegin(int x, int y, bool plain = true) {
+  bool linkClick = false;
+  std::string pressedLink;
+  void pointerBegin(int x, int y, bool plain = true, bool openLink = false) {
     selecting = x >= 0 && y >= 0 && x < term().sizeX() * renderer.cw &&
                 y < term().sizeY() * renderer.ch;
     cursorClick.cancel();
     if (!selecting) return;
-    cursorClick.begin(identities[&term()], x, y, plain);
+    linkClick = openLink;
+    pressedLink = openLink ? term().linkAt(x/renderer.cw,y/renderer.ch) : std::string{};
+    cursorClick.begin(identities[&term()], x, y, plain || openLink);
     term().selectCells(x / renderer.cw, y / renderer.ch, true);
     dirty = true;
   }
@@ -283,9 +287,14 @@ struct App {
     if (!selecting) return;
     pointerMotion(x, y);
     selecting = false;
-    if (cursorClick.finish(identities[&term()], x, y))
-      term().positionCursor(x < 0 ? -1 : x / renderer.cw,
-                            y < 0 ? -1 : y / renderer.ch);
+    if (cursorClick.finish(identities[&term()], x, y)) {
+      if (linkClick && !pressedLink.empty() && pressedLink == term().linkAt(x/renderer.cw,y/renderer.ch))
+        dx::spawn({"xdg-open", pressedLink});
+      else if (!linkClick)
+        term().positionCursor(x < 0 ? -1 : x / renderer.cw,
+                              y < 0 ? -1 : y / renderer.ch);
+    }
+    pressedLink.clear(); linkClick = false;
     dirty = true;
   }
   void select(size_t index) {
@@ -557,6 +566,7 @@ struct App {
   void pump() {
     for (size_t i = 0; i < tabs.size();) {
       dirty = tabs[i]->pty->pump() || dirty;
+      dirty = tabs[i]->animateGraphics() || dirty;
       if (!tabs[i]->pty->live()) {
         identities.erase(tabs[i].get());
         tabs.erase(tabs.begin() + i);
@@ -687,8 +697,14 @@ public:
     if (app.tabs.empty())
       return 1;
     auto &r = app.renderer;
-    if (event == FL_FOCUS || event == FL_ENTER)
+    if (event == FL_FOCUS || event == FL_ENTER) return 1;
+    if (event == FL_MOVE) {
+      auto uri = app.term().linkAt(Fl::event_x()/r.cw,Fl::event_y()/r.ch);
+      window()->cursor(uri.empty() ? FL_CURSOR_DEFAULT : FL_CURSOR_HAND);
+      copy_tooltip(uri.empty() ? nullptr : uri.c_str());
       return 1;
+    }
+    if (event == FL_LEAVE) { window()->cursor(FL_CURSOR_DEFAULT); tooltip(nullptr); return 1; }
     if (event == FL_UNFOCUS) {
       r.preedit.clear();
       app.selecting = false;
@@ -701,6 +717,16 @@ public:
       app.dirty = true;
       return 1;
     }
+    if (event == FL_PUSH && Fl::event_button() == FL_RIGHT_MOUSE) {
+      auto uri=app.term().linkAt(Fl::event_x()/r.cw,Fl::event_y()/r.ch);
+      if(!uri.empty()) {
+        Fl_Menu_Item items[]={{"Open link"},{"Copy link address"},{nullptr}};
+        const auto *chosen=items->popup(Fl::event_x_root(),Fl::event_y_root());
+        if(chosen==&items[0])dx::spawn({"xdg-open",uri});
+        else if(chosen==&items[1])Fl::copy(uri.data(),uri.size(),1);
+      }
+      return 1;
+    }
     if (event == FL_PUSH || event == FL_DRAG || event == FL_RELEASE) {
       if (event == FL_PUSH)
         take_focus();
@@ -711,21 +737,18 @@ public:
         if (event == FL_PUSH)
           app.pointerBegin(Fl::event_x(), Fl::event_y(),
                            !(Fl::event_state() & (FL_SHIFT | FL_CTRL | FL_ALT | FL_META)) &&
-                           Fl::event_clicks() == 0);
+                           Fl::event_clicks() == 0,
+                           (Fl::event_state() & (FL_CTRL|FL_SHIFT|FL_ALT|FL_META)) == FL_CTRL);
         else if (event == FL_DRAG)
           app.pointerMotion(Fl::event_x(), Fl::event_y());
         else app.pointerEnd(Fl::event_x(), Fl::event_y());
       } else if (event == FL_RELEASE && Fl::event_button() == FL_MIDDLE_MOUSE) {
-        if (app.options.wayland) {
-          app.pasteTab = app.identities[&app.term()];
-          app.clipboard.paste(true);
-        } else Fl::paste(*this, 0);
+        Fl::paste(*this, 0);
       }
       if (event == FL_RELEASE && Fl::event_button() == FL_LEFT_MOUSE) {
         auto text = app.term().selectionText();
         if (!text.empty()) {
-          if (app.options.wayland) app.clipboard.copy(text,true);
-          else Fl::copy(text.data(), text.size(), 0);
+          Fl::copy(text.data(), text.size(), 0);
         }
       }
       return 1;
@@ -977,7 +1000,9 @@ int main(int argc, char **argv) try {
                    event.button.button == SDL_BUTTON_LEFT) {
           app.pointerBegin(event.button.x, event.button.y,
                            !(app.keyModifiers & (KMOD_SHIFT | KMOD_CTRL | KMOD_ALT | KMOD_GUI)) &&
-                           event.button.clicks < 2);
+                           event.button.clicks < 2,
+                           (app.keyModifiers & (KMOD_CTRL|KMOD_SHIFT|KMOD_ALT|KMOD_GUI)) &&
+                           (app.keyModifiers & KMOD_CTRL) && !(app.keyModifiers & (KMOD_SHIFT|KMOD_ALT|KMOD_GUI)));
         } else if (event.type == SDL_MOUSEMOTION && app.selecting) {
           app.pointerMotion(event.motion.x, event.motion.y);
         } else if (event.type == SDL_MOUSEBUTTONUP &&

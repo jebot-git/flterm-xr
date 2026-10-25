@@ -7,9 +7,9 @@
 #include <filesystem>
 #include <stdexcept>
 #include FT_FONT_FORMATS_H
-Terminal::Terminal(int cols, int rows, const std::vector<std::string> &command)
+Terminal::Terminal(int cols, int rows, const std::vector<std::string> &command, std::string realm)
     : Fl_Term(0, 0, cols * 8, rows * 16, nullptr, true),
-      pty(new PtyHost(command)) {
+      pty(new PtyHost(command,std::move(realm))) {
   callback([](Fl_Widget *, void *) {});
   connect(pty, nullptr);
   grid(cols, rows);
@@ -161,6 +161,23 @@ void Renderer::render(Fl_Term &term, int tab, int count) {
   rect(0, 0, width, height, background(), opacity);
   const auto &ansi = terminal_style::ansi;
   auto snapshot = term.snapshot();
+  auto images = [&](int phase) {
+    for (auto &image : snapshot.images) {
+      int layer=image.z<INT32_MIN/2?0:image.z<0?1:2;
+      if(layer!=phase || image.width<=0 || image.height<=0) continue;
+      for(int y=std::max({0,image.y,image.clipTop});y<std::min({term.sizeY()*ch,image.y+image.height,image.clipBottom});++y)
+        for(int x=std::max(0,image.x);x<std::min(width,image.x+image.width);++x) {
+          int sx=image.sx+int(int64_t(x-image.x)*image.sw/image.width);
+          int sy=image.sy+int(int64_t(y-image.y)*image.sh/image.height);
+          if(sx<0 || sy<0 || sx>=image.pixels->width || sy>=image.pixels->height)continue;
+          auto from=&image.pixels->rgba[(size_t(sy)*image.pixels->width+sx)*4];
+          auto to=&pixels[(size_t(height-1-y)*width+x)*4];unsigned alpha=from[3];
+          for(int k=0;k<3;++k)to[k]=(from[k]*alpha+to[k]*(255-alpha))/255;
+          to[3]=alpha+to[3]*(255-alpha)/255;
+        }
+    }
+  };
+  images(0);
   for (const auto &run : snapshot.runs) {
     auto fg = run.style & terminal_style::foregroundRGB ? terminal_style::rgb(run.style,true)
               : run.style & terminal_style::foregroundSet ? ansi[run.style & 15] : foreground();
@@ -179,11 +196,23 @@ void Renderer::render(Fl_Term &term, int tab, int count) {
     } else if (explicitBackground)
       rect(run.column * cw, run.row * ch, run.columns * cw, ch,
            bg, styledOpacity);
+  }
+  images(1);
+  for (const auto &run : snapshot.runs) {
+    auto fg = run.style & terminal_style::foregroundRGB ? terminal_style::rgb(run.style,true)
+              : run.style & terminal_style::foregroundSet ? ansi[run.style & 15] : foreground();
+    auto bg = run.style & terminal_style::backgroundRGB ? terminal_style::rgb(run.style,false)
+              : run.style & terminal_style::backgroundSet ? ansi[(run.style >> 4) & 15] : background();
+    if(run.style & terminal_style::inverse)std::swap(fg,bg);
+    if(run.style & terminal_style::faint)for(int c=0;c<3;++c)fg[c]=(unsigned(fg[c])+bg[c])/2;
+    if(run.selected)fg=background();
     int n = 1;
     unsigned cp =
         fl_utf8decode(run.text.data(), run.text.data() + run.text.size(), &n);
     glyph(cp, run.column * cw, run.row * ch, run.columns, fg);
+    if (!run.link.empty()) rect(run.column*cw,(run.row+1)*ch-1,run.columns*cw,1,fg,1);
   }
+  images(2);
   if (snapshot.cursor && snapshot.cursorRow >= 0 &&
       snapshot.cursorRow < term.sizeY())
     rect(snapshot.cursorColumn * cw, snapshot.cursorRow * ch + ch - 2, cw, 2,

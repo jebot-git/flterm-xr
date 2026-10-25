@@ -71,13 +71,15 @@ void PtyHost::connect() {
   std::vector<std::string> environment;
   for (char **entry = environ; *entry; ++entry) {
     std::string value = *entry;
-    if (value.starts_with("TERM=") || value.starts_with("COLORTERM=") ||
+    if (value.starts_with("TERM=") || value.starts_with("COLORTERM=") || value.starts_with("TERM_PROGRAM=") || value.starts_with("DOME_TERMINAL_REALM=") ||
         (!utf8 && value.starts_with("LC_ALL=")))
       continue;
     environment.push_back(std::move(value));
   }
   environment.emplace_back("TERM=xterm-256color");
   environment.emplace_back("COLORTERM=truecolor");
+  environment.emplace_back("TERM_PROGRAM=FLTerm-XR");
+  environment.emplace_back("DOME_TERMINAL_REALM="+realm_);
   if (!utf8)
     environment.emplace_back("LC_ALL=C.UTF-8");
   std::vector<char *> envp;
@@ -114,11 +116,14 @@ void PtyHost::disconn() {
     kill(-child_, SIGHUP);
 }
 void PtyHost::send_size(int cols, int rows) {
+  cols_=cols;rows_=rows;
   if (fd_ < 0)
     return;
   winsize size{};
   size.ws_col = cols;
   size.ws_row = rows;
+  size.ws_xpixel = cols*cell_width_;
+  size.ws_ypixel = rows*cell_height_;
   ioctl(fd_, TIOCSWINSZ, &size);
 }
 int PtyHost::write(const char *bytes, int length) {

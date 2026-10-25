@@ -1,0 +1,94 @@
+# de-xr adaptation of the user's Catppuccin Macchiato two-line prompt.
+# Labels use ASCII; separators are native DomeD Powerline BDF glyphs.
+palette = "catppuccin_macchiato"
+format = """
+[░▒▓](crust)\
+${custom.de_xr}\
+[](bg:lavender fg:crust)\
+$directory\
+[ ](fg:lavender bg:surface0)\
+$git_branch\
+$git_status\
+$hg_branch\
+[ ](fg:surface0 bg:crust)\
+[▓▒░](crust)\
+[ ◦•](surface2)\
+$fill\
+[•◦ ](surface2)\
+[░▒▓](crust)\
+[ ](fg:surface0 bg:crust)\
+$status\
+$cmd_duration\
+[ ](fg:crust bg:surface0)\
+${custom.xr_status}\
+[▓▒░](crust)
+[·](surface0)\
+[·](surface2)\
+[•](overlay1)\
+[> ](teal)\
+"""
+
+[custom.de_xr]
+command = "printf de-xr"
+when = true
+format = '[ $output ]($style)'
+style = "fg:lavender bg:crust"
+
+[fill]
+symbol = "·"
+style = "surface2"
+
+[directory]
+style = "fg:surface0 bg:lavender"
+format = "[ $path ]($style)"
+truncation_length = 3
+truncation_symbol = ".../"
+
+[git_branch]
+symbol = "git:"
+style = "fg:lavender bg:surface0"
+format = '[ $symbol$branch ]($style)'
+
+[git_status]
+style = "fg:lavender bg:surface0"
+format = '[($all_status$ahead_behind )]($style)'
+
+[hg_branch]
+disabled = false
+symbol = "hg:"
+style = "fg:lavender bg:surface0"
+format = '[ $symbol$branch ]($style)'
+
+[cmd_duration]
+min_time = 0
+show_milliseconds = true
+style = "fg:text bg:surface0"
+format = '[$duration]($style)'
+
+[status]
+symbol = ' ERR '
+success_symbol = ' OK '
+not_executable_symbol = ' EXEC '
+not_found_symbol = ' CMD '
+map_symbol = true
+disabled = false
+style = 'fg:text bg:surface0'
+format = '[$symbol$status ]($style)'
+
+[custom.xr_status]
+command = 'printf "%s" "${DOME_TERMINAL_REALM:-DE}"'
+when = true
+format = '[ $output ]($style)'
+style = "fg:text bg:crust"
+
+[palettes.catppuccin_macchiato]
+crust = "#181926"
+surface0 = "#363a4f"
+surface2 = "#5b6078"
+overlay1 = "#8087a2"
+lavender = "#b7bdf8"
+text = "#cad3f5"
+teal = "#8bd5ca"
+yellow = "#eed49f"
+peach = "#f5a97f"
+red = "#ed8796"

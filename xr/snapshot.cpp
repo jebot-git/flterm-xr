@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "terminal-style.hpp"
+#include "kitty-diacritics.hpp"
 #include "Fl_Term.h"
 #include <FL/fl_utf8.h>
 #include <algorithm>
@@ -48,6 +49,7 @@ Fl_Term::Snapshot Fl_Term::liveSnapshot() {
                   columns(buff + line[cursor_y], cursor_x - line[cursor_y]),
                   cursor_y - top,
                   bCursor && view_top_ < 0};
+  std::vector<KittyGraphics::Placeholder> placeholders;
   int left = std::min(sel_left, sel_right),
       right = std::max(sel_left, sel_right);
   for (int row = 0; row < size_y && top + row + 1 < line_size; ++row) {
@@ -55,6 +57,8 @@ Fl_Term::Snapshot Fl_Term::liveSnapshot() {
         column = 0;
     if (end < begin || end > buff_size)
       continue;
+    int previousRow=0,previousColumn=-1,previousHigh=0;
+    uint64_t previousColor=~uint64_t(0);
     for (int i = begin; i < end && column < size_x;) {
       int count = 1;
       unsigned cp = fl_utf8decode(buff + i, buff + end, &count);
@@ -64,12 +68,33 @@ Fl_Term::Snapshot Fl_Term::liveSnapshot() {
         continue;
       }
       int width = std::max(0, wcwidth(cp));
+      if(cp==0x10eeee) {
+        int marks[3]={-1,-1,-1},at=i+count,nmarks=0;
+        while(at<end && nmarks<3) {
+          int n=1;auto mark=fl_utf8decode(buff+at,buff+end,&n);
+          auto found=std::find(std::begin(kitty_diacritics),std::end(kitty_diacritics),mark);
+          if(found==std::end(kitty_diacritics))break;
+          marks[nmarks++]=found-std::begin(kitty_diacritics);at+=std::max(1,n);
+        }
+        auto colors=image_colors_[i];int imageRow=std::max(0,marks[0]),imageColumn=std::max(0,marks[1]),high=std::max(0,marks[2]);
+        bool inherit=previousColor==colors;
+        if(!nmarks && inherit)imageRow=previousRow;
+        if(nmarks<2 && inherit && imageRow==previousRow)imageColumn=previousColumn+1;
+        if(nmarks<3 && inherit && imageRow==previousRow && imageColumn==previousColumn+1)high=previousHigh;
+        placeholders.push_back({uint32_t(colors)|(uint32_t(high&255)<<24),uint32_t(colors>>32),column,row,imageColumn,imageRow});
+        previousColor=colors;previousRow=imageRow;previousColumn=imageColumn;previousHigh=high;
+        // Draw the background, but neither the private-use glyph nor its marks.
+        result.runs.push_back({row,column,1," ",attr[i],i>=left&&i<right,link_uris_[link_ids_[i]]});
+        column+=1;i=at;continue;
+      }
+      previousColor=~uint64_t(0);
       result.runs.push_back({row, column, width, std::string(buff + i, count),
-                             attr[i], i >= left && i < right});
+                             attr[i], i >= left && i < right, link_uris_[link_ids_[i]]});
       column += width;
       i += count;
     }
   }
+  result.images=graphics_[bAltScreen].snapshot(top,size_y,font_width,font_height,placeholders);
   return result;
 }
 void Fl_Term::scrollRows(int amount) {
@@ -161,6 +186,7 @@ bool Fl_Term::positionCursor(int column, int row) {
       int n = 1;
       unsigned cp = fl_utf8decode(buff + target, buff + end, &n);
       int width = std::max(0, wcwidth(cp));
+
       if (cp < 32 || (width > 0 && col + width > column)) break;
       target += std::clamp(n, 1, end - target);
       col += width;
