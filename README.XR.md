@@ -76,6 +76,9 @@ group; outside DomeD it retains Ghostty XR's environment/KDE configuration path.
 ## Bindings and control
 
 - **Ctrl+Shift+T/W**: create/close a tab; **Ctrl+PageUp/PageDown**: switch tabs.
+- Exiting a shell (including Ctrl+D) closes only its tab. Other shells keep
+  running, and a background shell exit preserves the selected tab. Exiting the
+  final shell closes the terminal.
 - **Ctrl+Shift+C/V/A**: copy, paste and select all. Ctrl+C remains shell input.
 - Left-click positions the shell cursor on the current logical line (including
   soft wraps); drag selects text; middle-click pastes primary selection; wheel scrolls.

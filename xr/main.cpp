@@ -312,14 +312,27 @@ struct App {
       dirty = true;
     }
   }
-  void close() {
-    if (tabs.empty())
-      return;
-    identities.erase(tabs[active].get());
-    tabs.erase(tabs.begin() + active);
-    if (!tabs.empty())
-      active = std::min(active, tabs.size() - 1);
+  void remove(size_t index) {
+    // FLTK widget destruction can synchronously dispatch focus events. Keep the
+    // removed widget alive until those callbacks can see a consistent tab list.
+    auto removed = std::move(tabs.at(index));
+    identities.erase(removed.get());
+    tabs.erase(tabs.begin() + index);
+    if (index < active)
+      --active;
+    else if (index == active) {
+      active = tabs.empty() ? 0 : std::min(active, tabs.size() - 1);
+      renderer.preedit.clear();
+      selecting = false;
+      cursorClick.cancel();
+      pressedLink.clear();
+      linkClick = false;
+    }
     dirty = true;
+  }
+  void close() {
+    if (!tabs.empty())
+      remove(active);
   }
   void appearance() {
     if (auto font = inherited.read(); font && *font != renderer.choice) {
@@ -374,6 +387,8 @@ struct App {
   }
   bool key(const SDL_KeyboardEvent &event, const std::string &text = {},
            const kitty_keyboard::Key *identity = nullptr) {
+    if (tabs.empty())
+      return true;
     auto sc = event.keysym.scancode;
     auto mod = event.keysym.mod;
     keyModifiers = mod;
@@ -579,14 +594,10 @@ struct App {
       dirty = tabs[i]->pty->pump() || dirty;
       dirty = tabs[i]->animateGraphics() || dirty;
       if (!tabs[i]->pty->live()) {
-        identities.erase(tabs[i].get());
-        tabs.erase(tabs.begin() + i);
-        dirty = true;
+        remove(i);
       } else
         ++i;
     }
-    if (!tabs.empty())
-      active = std::min(active, tabs.size() - 1);
     if (auto text = clipboard.poll();
         text && !tabs.empty() && pasteTab == identities[&term()]) {
       term().pasteText(*text);
