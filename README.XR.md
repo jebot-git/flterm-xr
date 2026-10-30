@@ -50,8 +50,9 @@ export DOME_TERMINAL=/absolute/path/to/flterm-xr
 
 `DOME_TERMINAL` is an executable path, never a shell command. Its selected backend
 also owns the control namespace; custom wrappers can use `DOME_TERMINAL_BACKEND`
-to declare their protocol. The shipped desktop entries separately expose
-**FLTerm (DomeD)** and **FLTerm XR**, including WiVRn's XR application category.
+to declare their protocol. Installation selects **FLTerm (DomeD)** when a
+DomeD login session is available; otherwise it selects **FLTerm XR**, including
+WiVRn's XR application category.
 
 In the desktop input realm, **Super+T** and **Open Terminal** create independent
 Wayland windows with their own shells, tabs and control sockets. They never
@@ -277,3 +278,15 @@ executables/libraries. It does not restart desktop or display-manager sessions.
 `kitty-graphics` and `links` CTests cover the protocol/parser/rendering paths;
 the private desktop integration also opens links through a test URL handler and
 exchanges PRIMARY with independent FLTK clients and wl-clipboard.
+
+## Desktop entry selection
+
+Installation selects one menu entry: the DomeD entry when `dome.desktop` or
+`domed.desktop` is available in `wayland-sessions` or `xsessions`, otherwise the
+generic XR entry. DomeD takes priority when other sessions are also installed;
+`Hidden=true` sessions are ignored. Reinstalling removes the obsolete entry.
+CMake checks the install prefix's `share`, `/usr/local/share`, and `/usr/share`
+at install time, checking both `DESTDIR` and the host when staging. For an
+isolated target, configure `-DDE_XR_SESSION_ROOT=/path/to/target-root` (an empty
+root selects generic XR). Run `python3 tests/test-desktop-entry.py` to verify
+the installation rule without building the application.

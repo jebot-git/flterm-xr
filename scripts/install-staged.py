@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Install a verified stage atomically; build and stage as the regular user first."""
-import argparse, datetime, hashlib, json, os, pathlib, shutil, tempfile
+import argparse, datetime, hashlib, json, os, pathlib, re, shutil, tempfile
 p=argparse.ArgumentParser(description=__doc__);p.add_argument('stage',type=pathlib.Path);a=p.parse_args();stage=a.stage.resolve()
 if os.geteuid()!=0:raise SystemExit('System files require sudo: sudo python3 '+__file__+' '+str(stage))
 os.umask(0o022)
@@ -14,6 +14,13 @@ for item in manifest:
         if '/' in item['symlink'] or os.readlink(source)!=item['symlink']:raise SystemExit('Invalid library alias: '+name)
     elif source.is_symlink() or hashlib.sha256(source.read_bytes()).hexdigest()!=item['sha256']:
         raise SystemExit('Stage checksum mismatch: '+name)
+domed=any(path.is_file() and not re.search(r'^\s*Hidden\s*=\s*true\s*$',path.read_text(),re.M)
+          for data in ('/usr/local/share','/usr/share') for kind in ('wayland-sessions','xsessions')
+          for session in ('dome','domed') for path in [pathlib.Path(data)/kind/(session+'.desktop')])
+entries=('usr/local/share/applications/org.domed.FLTerm.desktop','usr/local/share/applications/org.domed.FLTerm.XR.desktop')
+selected,obsolete=entries if domed else entries[::-1]
+if not any(item['path']==selected for item in manifest):raise SystemExit('Desktop sessions changed; stage FLTerm again before installing: '+selected)
+manifest=[item for item in manifest if item['path']!=obsolete]
 backup=pathlib.Path('/var/backups/de-xr')/('flterm-compat-'+datetime.datetime.now().strftime('%Y%m%d-%H%M%S'))
 # Keep two privileged installs from interleaving their backups/replacements.
 import fcntl
@@ -33,5 +40,9 @@ for item in manifest:
         os.replace(temp,dest)
     finally:
         if os.path.lexists(temp):os.unlink(temp)
+old=pathlib.Path('/')/obsolete
+if old.exists() or old.is_symlink():
+    saved=backup/obsolete;saved.parent.mkdir(parents=True,exist_ok=True)
+    shutil.copy2(old,saved,follow_symlinks=False);old.unlink()
 print('Installed staged release; previous files:',backup)
 print('Newly launched FLTK applications use native PRIMARY. No desktop session was restarted.')
